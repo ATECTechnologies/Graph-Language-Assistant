@@ -1,6 +1,6 @@
 # CodeMind 2.0 — Architecture Overview (Detailed Edition)
 
-**A self-hosted, graph-based system that understands and writes code in 68 languages and reads human language in any language. It is built from three specialized graph-transformer brains, a mixture-of-experts router, a two-level reinforcement-learning system, and a built-in deterministic math and physics core that is part of the learning architecture itself. Target scale: about 6.1 billion parameters, trained on a single NVIDIA B200 (180 GB), with model size set by the measured size of the training data.**
+**A self-hosted, graph-based system that understands and writes code in 68 languages and **reads and writes human language freely in any language**. It is built from three specialized graph-transformer brains, a mixture-of-experts router, two decoders (a structural code decoder and a free-form text decoder), a two-level reinforcement-learning system, and a built-in deterministic math, physics and electronics core that is part of the learning architecture itself. Target scale: about 6.1 billion parameters, trained on a single NVIDIA B200 (180 GB), with model size set by the measured size of the training data.**
 
 > **Confidentiality & IP Notice**
 > Every mechanism in this document was checked against the real implementation (`CodeMind.py`, `codemind_brain_dual.py`, `build_graph_cache.py`, `search.py`, `linguistic_safety.py`; source marker v90). To protect the project's intellectual property, the document explains **what each part does, how the parts fit together and why they were built that way** — but it deliberately contains **no source excerpts, no loss or reward coefficients, no tuned thresholds or learning rates, no regular expressions, no training data and no model weights**. Architecture-scale figures (layer counts, widths, expert counts, context lengths) are included because they are needed to understand the design. The repository, not this document, is the source of truth.
@@ -55,7 +55,8 @@ The real license and README live in the repository; they are linked rather than 
 23. [Engineering Notes: Real Bugs, Real Fixes](#23-engineering-notes-real-bugs-real-fixes)
 24. [Key Parameters](#24-key-parameters)
 25. [Realistic Scope & Open Questions](#25-realistic-scope--open-questions)
-26. [Component Index](#26-component-index)
+26. [Verification and Test Results](#26-verification-and-test-results)
+27. [Component Index](#27-component-index)
 
 ---
 
@@ -67,7 +68,7 @@ CodeMind represents source code as a **typed, heterogeneous graph** — function
 
 **The core is a chain of three brains** — instances of one HGT class that differ only in depth:
 
-- **Brain C** (17 layers) reads the human-language instruction.
+- **Brain C** (15 layers) reads the human-language instruction.
 - **Brain A** (8 layers) reads the code graph, informed by what Brain C understood.
 - **Brain B** (7 layers) is the edit-oriented brain, informed by what Brain A understood.
 
@@ -77,11 +78,11 @@ They are joined by **one learned anti-forget bridge** and steered by **one mixtu
 
 1. **Supervised objectives** align instructions, code understanding and code targets, and teach the decoder by teacher forcing.
 2. **A two-level reinforcement-learning system.** *Level 1* is a clipped-objective PPO head that learns calibrated confidence and value, so the model knows when to abstain. *Level 2* is a true trajectory-level policy gradient on the decoder, driven by a multi-layer automated validator, which teaches the decoder to produce code that actually validates — something cross-entropy cannot teach.
-3. **A math and physics core that lives inside the architecture.** A deterministic engine (exact arithmetic, SI units with dimensional analysis, 45 physics formulas) feeds the model's representations (an adapter), supplies self-computed labels for a dedicated learning head, contributes a verified problem curriculum to the same training stream, scores generated claims in the RL reward, and corrects wrong arithmetic at generation time.
+3. **A math and physics core that lives inside the architecture.** A deterministic engine (exact arithmetic, SI units with dimensional analysis, 121 physics, electronics and engineering formulas — each one verified against an independent reference value) feeds the model's representations (an adapter), supplies self-computed labels for a dedicated learning head, contributes a verified problem curriculum to the same training stream, scores generated claims in the RL reward, and corrects wrong arithmetic at generation time.
 
 **Around the core** sit a policy-driven linguistic-safety module, a web-search subsystem engineered to never hang, leak or trust what it fetches, and a resumable offline graph-cache builder so paid GPU time is never spent on parsing.
 
-**Scale and hardware.** The architecture arithmetic gives **about 6.08 billion parameters**, inside a 6.0–6.2 B budget, trained on **one NVIDIA B200 (180 GB)**. The model size is not a fixed constant: it is computed from the *measured* size of the training data (currently about 275–285 GB), and Brain C's depth — one layer is ≈168 M parameters — is the knob that moves it.
+**Scale and hardware.** The architecture arithmetic gives **about 6.10 billion parameters**, inside a 6.0–6.2 B budget, trained on **one NVIDIA B200 (180 GB)**. The model size is not a fixed constant: it is computed from the *measured* size of the training data (currently about 275–285 GB), and Brain C's depth — one layer is ≈168 M parameters — is the knob that moves it.
 
 ---
 
@@ -171,20 +172,21 @@ Computed analytically from the configuration by the same formulas the code uses 
 
 | Component | Structure | ≈ Parameters |
 |---|---|---|
-| Brain C | 17 HGT layers | 2.90 B |
+| Brain C | 15 HGT layers | 2.57 B |
 | Brain A | 8 HGT layers | 1.39 B |
 | Brain B | 7 HGT layers | 1.23 B |
-| CodeDecoder | 9 layers, 16 heads, ≈8K closed vocabulary, 8 memory-prefix tokens | 0.33 B |
+| CodeDecoder (structural, code) | 9 layers, 16 heads, ≈14K output vocabulary, 8 memory-prefix tokens | 0.35 B |
+| Text decoder (free-form language) | 8 layers, 16 heads, 32K byte-level BPE vocabulary, 8 memory-prefix tokens, 2,048 context | 0.34 B |
 | FlyPrompt router | 12 experts + expert-communication block | 0.16 B |
 | Anti-forget bridge | gated fusion module | 0.02 B |
 | Encoder, fusion, policy head, small heads, math core | hashed token encoder, semantic fusion, PPO policy head, appropriateness / masked-word heads, math adapter + head | ≈ 0.06 B |
-| **Total** | | **≈ 6.08 B** |
+| **Total** | | **≈ 6.10 B** |
 
-One HGT layer is ≈168 M parameters, almost all of it the **per-node-type** query/key/value/output matrices (15 node types × four 1,664 × 1,664 matrices); the per-relation attention tensors add only ≈1.3 M per layer. Depth is therefore the main size lever: **each layer costs ≈0.17 B**, and Brain C — the newest and least-proven brain — is the one adjusted first.
+One HGT layer is ≈168 M parameters, almost all of it the **per-node-type** query/key/value/output matrices (15 node types × four 1,664 × 1,664 matrices); the per-relation attention tensors add only ≈1.3 M per layer. Depth is therefore the main size lever: **each layer costs ≈0.17 B**, and Brain C — the newest and least-proven brain — is the one adjusted first. (Brain C went from 17 to 15 layers when the text decoder was added: the 0.34 B of the new decoder was paid for with two Brain C layers, keeping the total inside the 6.0–6.2 B budget; `brain_c_layers` is a single setting.)
 
 ### 4.3 Memory: static budget and how it behaves across training modes
 
-Weights, gradients and AdamW state cost **≈16 bytes per parameter**. At 6.08 B parameters that is **≈97 GB** of static memory on a 180 GB card, leaving ≈80 GB for everything that scales with input rather than with model size: decoder activations at very long context, HGT activations over graphs of up to 12,288 nodes, the MoE and PPO buffers, and allocator overhead. The decoder's attention uses a fused flash-style kernel, so its memory is **linear** in context length; compute remains quadratic, an accepted cost.
+Weights, gradients and AdamW state cost **≈16 bytes per parameter**. At 6.10 B parameters that is **≈98 GB** of static memory on a 180 GB card, leaving ≈80 GB for everything that scales with input rather than with model size: decoder activations at very long context, HGT activations over graphs of up to 12,288 nodes, the MoE and PPO buffers, and allocator overhead. The decoder's attention uses a fused flash-style kernel, so its memory is **linear** in context length; compute remains quadratic, an accepted cost.
 
 **Default (joint training): nothing is frozen.** All three brains train in every round, so the full ≈97 GB is resident throughout and ≈80 GB remains for activations. Brain C's word graphs are tiny next to the code graphs, so its activations are a small part of that.
 
@@ -208,7 +210,7 @@ The reasoning is a Chinchilla-style cross-check with three explicit, adjustable 
 | 210 GB | 120 B | ≈ 6.0 B |
 | 280 GB | 160 B | ≈ 8.0 B |
 
-**For the current data (≈275–285 GB)** the rule supports roughly 7.9–8.1 B parameters. The configuration deliberately stays below that, inside a **6.0–6.2 B budget** set by the owner (and by VRAM headroom), which puts the 6.08 B model at **≈26 effective tokens per parameter** — comfortably in the "appropriate" band. The advisor's verdicts are: *too little data* below 10 tokens per parameter (undertrained risk), *appropriate* from 10 to 60, and *model smaller than the data supports* above 60. It recommends a Brain C depth within the budget — never exceeding the ceiling, and never going below four layers, where Brain C stops being a language model at all.
+**For the current data (≈275–285 GB)** the rule supports roughly 7.9–8.1 B parameters. The configuration deliberately stays below that, inside a **6.0–6.2 B budget** set by the owner (and by VRAM headroom), which puts the 6.10 B model at **≈26 effective tokens per parameter** — comfortably in the "appropriate" band. The advisor's verdicts are: *too little data* below 10 tokens per parameter (undertrained risk), *appropriate* from 10 to 60, and *model smaller than the data supports* above 60. It recommends a Brain C depth within the budget — never exceeding the ceiling, and never going below four layers, where Brain C stops being a language model at all.
 
 The advisor runs **every time data is connected** and logs its verdict. It **reports but never rebuilds**: changing depth after a model has been created or trained would make its checkpoints unloadable, so any resize is a deliberate, between-runs decision. If the dataset changes size, the guidance is simple: add or remove Brain C layers; the other brains stay as proven.
 
@@ -322,7 +324,7 @@ All three brains share the same width (1,664) and head count (64, exactly 26 dim
 
 | Brain | Depth | Reads | Job | Routing task id |
 |---|---|---|---|---|
-| **C** | 17 layers | Human-language graph (the instruction) | Understand what is being asked, in any language | 2 |
+| **C** | 15 layers | Human-language graph (the instruction) | Understand what is being asked, in any language | 2 |
 | **A** | 8 layers | Code graph (the source) | Understand code structure, informed by C | 0 |
 | **B** | 7 layers | Code graph (the target side of an edit) | Edit-oriented representation, informed by A | 1 |
 
@@ -358,7 +360,7 @@ flowchart LR
 - **Masked words in only half the steps.** The masked-word objective hides words, which would also feed a masked prompt into Brain A's conditioning; so only about half the joint steps mask (`joint_mlm_prob`), and the rest condition Brain A on the clean prompt.
 - **Anti-forgetting across rounds.** The bridge's anchor is refreshed at the end of each round from the recent code embeddings (blended with the previous anchor by decay), so rounds 2 and 3 are penalized for drifting away from what the previous round learned (Section 11). In round 1 the anchor does not exist yet, so the penalty is zero.
 - **Decoder RL waits for a decoder worth rolling out.** A decoder that has barely begun learning produces mostly broken rollouts; running RL then spends validator time on negative samples. The decoder-RL cadence is therefore 4× sparser in round 1, 2× sparser in round 2 and the normal cadence in round 3 (Section 16.2).
-- **The language file trains Brain C directly (language stream).** Language-only records (Section 20.1) are trained in separate **language micro-batches**: 128 records per batch run through Brain C alone (the shared router, task id 2) with **masked-word prediction** on the text (in about half the batches) and, for records that have a response or translation, a **symmetric in-batch contrastive alignment** between the embedding of the text and of the response — the other pairs of the batch are the negatives, which for translation pairs aligns the two languages. The router's balancing loss for the call is popped and added so it cannot leak into the next code step. The batch loss is weighted 0.5 relative to a code micro-batch.
+- **The language file trains Brain C directly (language stream).** Language-only records (Section 20.1) are trained in separate **language micro-batches**: 128 records per batch run through Brain C alone (the shared router, task id 2) with **masked-word prediction** on the text (in about half the batches) and, for records that have a response or translation, a **symmetric in-batch contrastive alignment** between the embedding of the text and of the response — the other pairs of the batch are the negatives, which for translation pairs aligns the two languages. The router's balancing loss for the call is popped and added so it cannot leak into the next code step. The batch loss is weighted 0.5 relative to a code micro-batch. A plain-text record (no response) is first split at a random sentence boundary into a prompt and a continuation, so it also yields an alignment pair. Every fourth micro-batch additionally trains the **free-form text decoder** on the same records (Section 13.4), using the Brain C embeddings already computed.
 - **A language micro-batch is a full gradient-accumulation slot.** It uses the same 1/`grad_accum` scaling and the same optimizer-step rule as a code micro-batch, so one optimizer step always spans the same number of micro-batches, and the learning-rate schedule — counted in records of *both* kinds — stays consistent. The producer thread queues language records as they arrive from the size-weighted stream; the training thread drains the queue whenever a full micro-batch is waiting and once more at the end of the pass, so every language record is used exactly once per round.
 - **A round-end checkpoint** is written after every round, in addition to the periodic step checkpoints.
 
@@ -515,20 +517,23 @@ One `AntiForgetBridge` joins **both** hand-offs — C → A and A → B — and 
 
 ### 13.1 The action codec
 
-`GraphActionCodec` is the single codec for the whole system. It walks a target graph's *generatable* nodes in a defined order and emits a sequence of **structural actions**. Each generated node costs one *type* action followed by its *label*, and a label is written in one of two ways:
+`GraphActionCodec` is the codec of the structural (code) decoder. It walks a target program's lines in source order and emits a sequence of **structural actions** from a **closed vocabulary**. Each line costs one *type* action and, for lines of text, a *label*:
 
-1. **Whole-line vocabulary (cheapest).** The ≈8,000 most frequent labels in the corpus (typically a whole line of code) are single ids. A line that hits the vocabulary costs **2 actions** (type + label).
-2. **Sub-line pieces (everything else).** A line outside the vocabulary is spelled out as **pieces** from a learned subword vocabulary (6,000 byte-pair merges plus every single character), between a start marker and an end marker. Pieces average about three characters, like a language model's tokens. Before this vocabulary existed, such lines were spelled one character at a time — about three times the cost of an LLM's tokens for the same text.
+- **Types:** `func` and `stmt` (a line of code), **`comment`** (a whole comment line, marker included — `# …`, `// …`), and **`blank`** (one empty separator line, no label), plus `INDENT` / `DEDENT` markers that carry the block structure.
+- **Whole-line vocabulary (cheapest).** The ≈8,000 most frequent labels in the corpus are single ids: a line that hits it costs **2 actions** (type + label).
+- **Sub-line pieces (everything else).** A line outside the vocabulary is spelled as **pieces** from a learned byte-pair vocabulary (6,000 merges plus every single character) between a start and an end marker — about three characters per action, like a language model's tokens. Before this vocabulary existed such lines were spelled one character at a time (about three times the cost of an LLM's tokens).
+- **Whole lines, not 80-character stubs.** The understanding graph keeps only the first 80 characters of a line as a node label, so a longer line used to be generated truncated, silently. The codec takes the full stripped line (up to 240 characters) whenever the label is exactly such a cut; the understanding graph and the offline graph cache are untouched.
 
-Other properties:
+Four corrections made the code path produce *valid, complete* programs (all measured on held-out real files, Section 26):
 
-- **Whole lines, not 80-character stubs.** The understanding graph keeps only the first 80 characters of a line as a node label, so a longer line used to be generated *truncated*, silently. The codec now takes the full stripped line (up to 240 characters) whenever the label is exactly such a cut; only the codec's own representation changes — the understanding graph and the offline graph cache are untouched.
-- **Fitted once, saved with the weights.** `fit_generator_tokenizer` learns the whole-line vocabulary and the piece merges from the corpus (a one-time cost of tens of seconds) and saves `gen_codec.json`, a required companion to the weights. The decoder's output size is reserved up front (labels + pieces), so it never depends on how many merges were learned. A codec file from before the piece vocabulary loads and simply uses character spelling; a file with more merges than the model reserves is refused rather than silently mismatched.
-- **Measured effect.** On held-out real source files (Python and C, 150 files; whole-line vocabulary and pieces fitted on 850 other files) the total number of actions fell **2.85×** (1.22 M → 0.43 M), and decoding every sequence back reproduced all 44,944 labels exactly. This is a proxy corpus, not your data; the hit rate of the whole-line vocabulary on your 275–285 GB will differ, and it is worth measuring.
+1. **Indentation was never generated.** The training sequences contain `INDENT`/`DEDENT`, but at inference the allowed set was "node types plus end-of-sequence", so the decoder could not emit them and generated Python came out flush-left (an `IndentationError` for any block). They are now part of the grammar, with a depth-aware mask (no `DEDENT` at depth 0, no `INDENT` beyond a depth cap).
+2. **A dedent to a column between two levels lost a level.** After a continuation line indented deeper than the body (`def f(a,` / `        b):` / `    body`) the encoder popped the continuation's column and stopped one level short, so the body was written one level too shallow — about a quarter of real Python files did not survive an encode → decode → render round trip. Fixed; 60 of 60 held-out Python files now compile after the round trip.
+3. **Every call was written twice.** A `call` node's label is only the callee's name, which the statement line already contains; each call became a separate action pair and the renderer printed it as a line of its own (a bare `foo` after `x = foo(1)`). Call nodes are no longer generated: on real Python files they were **about a quarter of all node actions**, and the extra lines were not valid code in most languages.
+4. **Comments and spacing could not be generated.** The graph builders skip comment and empty lines, so a generated program could never contain either. Comments and single blank separators are now actions of their own; the renderer writes a comment at the current indentation and never emits two blank lines in a row or a leading one.
 
-`GraphRenderer` turns an action sequence back into formatted source text per language family.
+Fitting: `fit_generator_tokenizer` learns the whole-line vocabulary and the piece merges from the corpus (a one-time cost of tens of seconds) and saves `gen_codec.json`, a required companion to the weights. The decoder's output size is reserved up front (labels + pieces), so it never depends on how many merges were learned. A codec file from before the piece vocabulary loads and simply uses character spelling; one with more merges than the model reserves is refused rather than silently mismatched.
 
-The trade-off is stated plainly: because no language is special-cased on this path, there is no guarantee-by-construction of syntax validity such as a language's own unparser would give. One decoder learning from all 68 languages, disciplined by the validator and the RL loop, is the intended alternative.
+`GraphRenderer` turns an action sequence back into formatted source text per language family. Because no language is special-cased on this path, there is no guarantee-by-construction of syntax validity such as a language's own unparser would give; validity comes from the validator, the RL loop and abstention.
 
 ### 13.2 The decoder
 
@@ -551,7 +556,20 @@ The production decoder is **deterministic greedy** with an anti-cycle guard that
 - **GPU-side top-k (new).** At each decision the decoder used to copy the full logit vector (≈14,000 floats) to Python and sort every allowed id (up to 8,000 for a label decision) — measured at ≈1.7 ms of pure-Python work per label decision, on top of the copy. The masked top-k is now computed on the GPU and only 32 (id, logit) pairs are transferred; the decision rule is unchanged unless all 32 best candidates would extend a cycle (then it falls back to the full path). Equivalence with the old path was verified action-for-action on 22 real files with a scripted decoder; the *timing* gain needs a real GPU to measure and is not claimed here.
 - **Cycle guard fixed.** The anti-cycle guard fired on the *third* repetition of a pattern, which blocks ordinary code — three closing braces in a row, repeated `#define` or `case` lines — and in one real C header it blocked 29 legitimate positions. It now triggers at the eighth repetition (still stopping runaway loops quickly) and does not apply inside a spelled label, where a run like `======` is legitimate.
 
-### 13.4 Large code
+### 13.4 Free-form natural-language generation (text decoder)
+
+Code is generated by the structural decoder because code has structure to exploit. **Natural language has none worth constraining, so it is generated freely**: a second decoder — the same transformer class, **8 layers, its own 32,000-token vocabulary, its own optimizer** — writes text token by token with no grammar mask, in any language and any form (explanation, translation, conversation, narrative, list, short or long). It is separate from the code decoder, so neither can degrade the other.
+
+- **Tokenizer (`TextCodec`).** A **byte-level BPE**: the base alphabet is the 256 byte values, so *every* string in *any* script — Thai, Chinese, Arabic, emoji, binary-looking input — is representable with no unknown token; merges are learned from the language data itself, so the common words and word-pieces of every language in the corpus cost one token. A run without spaces (a Thai sentence) is cut into pieces of at most 24 bytes for learning. Measured: **exact round trip on every test string** (14 cases including unseen scripts, emoji, control characters and 500-character unbroken runs); about **4 bytes per token on held-out English** after learning from only 1 MB (comparable to a general-purpose LLM tokenizer, and it improves with more data); ≈ 0.6–1.1 M tokens per second per core, i.e. 40–75 ms for a 128-record micro-batch. `python CodeMind.py fittext` learns it on CPU before training; otherwise it is learned automatically when the language stream starts.
+- **What it sees.** The decoder's context is `BOS · prompt tokens · SEP · answer tokens · EOS`, with the answer tokens predicted. It therefore reads the **prompt itself** — nothing is squeezed through a pooled vector — and, in addition, Brain C's understanding of the prompt as **8 memory-prefix tokens** (the same mechanism as the code decoder), so what Brain C learned about meaning, register and cross-lingual structure reaches the generator.
+- **How it learns.** Inside the language micro-batches (Section 9.2.1), every `text_train_every`-th micro-batch (default 4) also trains the text decoder, by teacher forcing on up to 32 (prompt, answer) pairs with the loss on the **answer tokens only**. A record with a response uses it; a plain-text record is split at a random sentence boundary into a prompt and a continuation, so every plain text — in every language — teaches fluency and coherence. A small fixed fraction of this loss is allowed to reach Brain C through the same gradient-limited bridge as the code decoder. Subsampling bounds the cost: 32 sequences × ~640 tokens × a 32K vocabulary is already several GB of logits.
+- **Generating (`chat`, `/chat`, `chat` command).** Nucleus sampling with a repetition penalty, answer length bounded only by the 2,048-token context (or `max_tokens`). A `system` string can be prepended to steer tone, register or directness. No form is imposed: length, language, register and structure come from the prompt and from what the model learned.
+- **Quality control, not censorship.** An answer that **collapsed into a loop or came out empty** is re-sampled (up to twice, each time slightly hotter and with a stricter repetition penalty) and the least degenerate attempt is returned together with its degeneration score, so a caller can see when the model was struggling instead of receiving confident-looking filler. Policy screening (Section 18) is applied to the output by the API layer only when a policy is configured.
+- **One entry point.** `respond(prompt, mode)` / `/chat` with `mode = "auto"` routes a request that asks for code (code fences, programming vocabulary in English, Thai, Chinese, Japanese or Korean) to the structural decoder and everything else to the text decoder; `mode = "text"` or `"code"` overrides.
+
+**What this does and does not provide.** The mechanism for free-form generation in any language is in place; *how good* the answers are — vocabulary, register, directness, whether the model says plainly what it does not know — is determined by the language data and the training, which have not been run. The system does not hard-code a personality: tone and bluntness are steered by the prompt and the `system` text and by what the data teaches. Two limits are structural: the answer depends on the prompt tokens and an 8-token summary, not on retrieved context; and training sequences are at most 640 tokens, so very long generations beyond that rely on positional extrapolation.
+
+### 13.5 Large code
 
 `LargeCodeHandler` edits or generates code from 10,000 to 500,000+ lines by chunking at function and class boundaries (never mid-function), processing chunk by chunk, carrying a **semantic context embedding** from one chunk to the next in addition to textual tail context, and stitching outputs back with indentation preserved. It streams, so the whole file is never resident at once.
 
@@ -721,10 +739,11 @@ Language models do arithmetic unreliably, and a model that sees numbers only as 
 ### 17.1 The engine
 
 - **Exact arithmetic:** integers and fractions stay exact (`1/3 + 1/6 = 1/2`, `2**100` is the exact big integer); only genuinely irrational results become floating point. Division by zero, enormous powers and unknown functions are rejected, not approximated.
-- **Units and dimensions:** every value is stored in SI with a 7-component dimension vector (metre, kilogram, second, ampere, kelvin, mole, candela). **69 units** (length, mass, time, energy, power, pressure, frequency, electrical, volume, angle and more) and **28 physical and mathematical constants** (c, h, ħ, e, k_B, N_A, G, g, ε₀, μ₀, particle masses, solar and terrestrial constants, and so on). Mismatched dimensions are *errors*: `1 m + 1 s` is rejected, as is `sin` of a length or a dimensioned exponent. Results can be converted (`to="MeV"`, `"km/h"`).
+- **Units and dimensions:** every value is stored in SI with a 7-component dimension vector (metre, kilogram, second, ampere, kelvin, mole, candela). **69 units** (length, mass, time, energy, power, pressure, frequency, electrical, volume, angle and more) and **32 physical and mathematical constants** (c, h, ħ, e, k_B, N_A, G, g, ε₀, μ₀, particle masses, solar and terrestrial constants, the Wien and Thomson constants, the Bohr magneton, the solar luminosity, and so on). Mismatched dimensions are *errors*: `1 m + 1 s` is rejected, as is `sin` of a length or a dimensioned exponent. Results can be converted (`to="MeV"`, `"km/h"`).
 - **Safe evaluation:** a restricted expression language with no imports, no attribute access and no calls beyond a whitelist of mathematical functions.
-- **45 physics formulas** across mechanics, fluids and thermodynamics, electricity, waves/optics/quantum, relativity and more (kinetic and potential energy, orbital and escape velocity, pendulum and spring periods, ideal gas, Stefan–Boltzmann, Ohm and Coulomb, photon energy, de Broglie, Bohr levels, Lorentz factor, Schwarzschild radius, RC time constant, and others). **Every formula carries an automatic dimensional self-check** that runs in the self-test, and the numbers were checked against hand calculation before inclusion.
+- **121 formulas** (45 original + 76 added) across **mechanics and orbits** (projectile, drag and terminal velocity, rocket equation, moments of inertia, vis-viva, tidal acceleration, Kepler's third law, Hill sphere, Roche limit), **fluids and thermodynamics** (Reynolds number, hydrostatic pressure, Carnot efficiency, entropy, Fourier conduction, speed of sound, kinetic theory, Wien's law, stellar luminosity), **gravity, relativity and cosmology** (Hawking temperature, gravitational redshift, Eddington luminosity, critical density, Hubble distance, relativistic momentum, kinetic energy, velocity addition, length contraction and Doppler shift), **quantum and atomic physics** (particle in a box, Rydberg lines, Compton shift, photoelectric effect, Fermi energy, Debye length, plasma and cyclotron frequency), **optics** (Snell, Brewster, Bragg, grating, Rayleigh resolution, thin lens, decibels) and **electromagnetism and circuits** (voltage divider, parallel resistance, RC / LC / RLC behaviour, reactances, op-amp gains, LED resistor, transformer, skin depth, capacitor and solenoid, fields of charges and wires, Hall voltage). **Every formula carries a dimensional self-check, and every added formula also carries a reference value computed independently of its expression**, both verified by the self-test; a result with the wrong dimension, or inputs of the wrong dimension, are errors.
 - **Numerical tools:** exact rational linear-system solving (Gauss–Jordan with pivoting on fractions), Brent root finding (requires a bracketing sign change), adaptive Gauss–Kronrod integration, higher-order derivatives with Richardson extrapolation, and an adaptive Dormand–Prince Runge–Kutta integrator for simple physical simulation.
+- **Engineering helpers (`/engineering`, `engineering_calc`).** Standard component values (**E6, E12, E24** from the IEC 60063 tables; **E48, E96, E192** from the IEC rounding rule — the generated E96 series equals the standard 96-value table exactly; E192 has a few conventional exceptions the rule does not reproduce, so it is approximate); the nearest standard value (or the smallest one at or above, for a current-limiting resistor); **PCB trace width from IPC-2221** (`I = k·ΔT^0.44·A^0.725`, outer layer k = 0.048, inner 0.024, 1 oz = 1.378 mil — an empirical fit valid roughly for 0.5–35 A, 10–100 °C rise and 0.5–3 oz copper; it says nothing about voltage clearance or frequency effects); decibel conversion; the best **standard-value resistor divider** for a target ratio; an **LED series resistor** with its resulting current and dissipation. The same endpoint lists and evaluates the whole formula table.
 - **Claim verification:** `verify_text` scans "expression = value" statements in text, recomputes them and returns a verdict. A self-test of dozens of cases (including the rejections above) runs from the command line.
 
 ### 17.2 `MathPhysicsService` — one object, four roles
@@ -896,7 +915,7 @@ In the order the pipeline performs it (batched mode does the same work over a mi
 7. **Policy head step.** State, action and reward are stored; the PPO head updates when its buffer is full.
 8. **Loss assembly.** The six supervised terms, plus the joint-training terms (Brain C alignment, masked-word on about half the steps, anti-forget from round 2) — or, in sequential mode, the phase-specific terms (anti-forget in B; masked-word in C, and appropriateness in C when a labelled file is supplied), the step-averaged router balancing loss, and the math-head loss when labels exist.
 9. **Backward and update.** Gradients accumulate over the configured number of micro-steps; at the boundary the optimizer applies a clipped update, skipping any non-finite step.
-10. **Language micro-batches** — whenever 128 language-only records are queued, one Brain-C-only micro-batch runs between code micro-batches (Section 9.2.1).
+10. **Language micro-batches** — whenever 128 language-only records are queued, one Brain-C micro-batch runs between code micro-batches, and every fourth one also takes a step of the text decoder (Sections 9.2.1 and 13.4).
 11. **Every few steps:** one **decoder RL rollout** (Section 16.2); periodically a checkpoint, a validation/quality pass, and a VRAM-governor check.
 
 ### 21.2 Optimizer and schedule
@@ -942,6 +961,8 @@ Every brain-side module — the three brains, encoder, fusion, bridge, router, t
 | `langs` | Inspect human languages present in data |
 | `graphcheck` | Validate code and language graphs on real data; confirm tree-sitter availability |
 | `search` | Test the search system |
+| `fittext` | Learn the text tokenizer (byte-level BPE) from the language data — CPU only, no model load |
+| `chat` | Ask a question and get a free-form answer (one-shot or interactive; `--mode auto/text/code`, `--system`) |
 
 Running with no subcommand prints help and concrete examples.
 
@@ -954,7 +975,9 @@ Running with no subcommand prints help and concrete examples.
 | `POST /generate` | Generate code (abstains unless forced; math guard applies) |
 | `POST /understand` | Deep understanding of code |
 | `POST /validate` | Run the validator |
+| `POST /chat` | Free-form answer in any language (text), or code when the request asks for it (`mode = auto`) |
 | `POST /calc` | Deterministic math and physics |
+| `POST /engineering` | Standard component values, PCB trace width, dB, dividers, LED resistors, and the 121-formula table |
 | `POST /ground` | Route a question to the engine, to web search, or to neither, and return a ready-to-use context |
 | `POST /search`, `GET /search/health` | Web search and its health |
 
@@ -1025,6 +1048,12 @@ These come from the source's own dated change markers and from the hardening pas
 - **A streaming feeder that could not exceed a few samples per second** (priority buffer re-scanned and re-hashed on every sample), **that did not shuffle at the start of training** (equal priorities kept insertion order), **and mixed only within one file at a time** — replaced by an interleaved, RAM-sized heap buffer.
 - **Cache accounting that ignored disk blocks and rescanned directories** from the training thread; unified into one 80 GB budget with tracked sizes, a pinned shard cache and a graph cache that stops writing when it cannot help.
 - **A file per sample for three small memories** — RAM-only above one million samples.
+- **Generated code had no indentation.** `INDENT`/`DEDENT` were in the training sequences but masked out at inference, so generated Python was flush-left; they are now generated, with a depth-aware mask.
+- **A body written one level too shallow after a continuation line** (the encoder's dedent loop stopped short) — about a quarter of real Python files did not round-trip; now 60 of 60 do.
+- **Every call written twice, and printed as a stray line** — call nodes are no longer generated (≈ a quarter of all node actions on real Python).
+- **Comments and blank lines could not be generated** at all — now they can.
+- **The anti-loop guard blocked ordinary code** and had two copies of the same function; one implementation, with a sensible threshold.
+- **No way to write natural language** except as code strings — a free-form text decoder, tokenizer, `chat` endpoint and command were added.
 - **Half the corpus would have been discarded.** A language file's records have no code target, and the loader skipped every such record (the language detector read them, nothing trained on them). They now reach Brain C through the language stream.
 - **Assumed numbers replaced by measured ones:** the shuffle buffer is bounded by the measured in-memory size of the samples held (an earlier version used an assumed 40 KB per sample), the code/language mix is measured by probing the files, and the parse-worker count is the pod's CPUs minus three (an earlier version capped it at an arbitrary 24).
 - **torch's CPU thread pool left at its default** next to up to 25 parse workers — now a few threads in the trainer and one per worker.
@@ -1046,22 +1075,23 @@ These come from the source's own dated change markers and from the hardening pas
 
 | Parameter | Value |
 |---|---|
-| **Target total parameters** | **≈ 6.1 B** (analytic estimate 6.08 B; budget 6.0–6.2 B; authoritative count logged at start-up and in the model card) |
+| **Target total parameters** | **≈ 6.1 B** (analytic estimate 6.10 B; budget 6.0–6.2 B; authoritative count logged at start-up and in the model card) |
 | **Target hardware** | **One NVIDIA B200, 180 GB HBM3e, single GPU; pod with 283 GB RAM, 28 vCPU; 80 GB SSD cache** |
-| Static training memory | ≈ 16 bytes per parameter (≈ 97 GB at 6.08 B); stays ≈ 97 GB in joint training (≈ 62 GB after Brain C is frozen in the optional sequential schedule) |
+| Static training memory | ≈ 16 bytes per parameter (≈ 98 GB at 6.10 B); stays ≈ 98 GB in joint training (≈ 62 GB after Brain C is frozen in the optional sequential schedule) |
 | Hidden width | 1,664 (brains, decoder, router, bridge) |
 | Attention heads | 64 in brains (26 dims each); 16 in decoder |
-| Brain depths | C = 17, A = 8, B = 7 HGT layers (≈ 168 M parameters per layer) |
+| Brain depths | C = 15, A = 8, B = 7 HGT layers (≈ 168 M parameters per layer) |
 | Node / relation types | 15 / 31 |
 | Registered code languages | 68 |
 | Routing | 12 experts, top-3; 3 task-bias rows (C = 2, A = 0, B = 1); one router, one bridge; experts ≈ 11 M parameters each |
 | Expert communication | one self-attention layer (8 heads) over the 3 selected experts, gated residual |
-| Decoder | 9 layers, output vocabulary ≈ 14,100 (≈ 8,000 whole-line labels + 6,000 sub-line pieces + characters and markers), 8 memory-prefix tokens, rotary positions |
+| Code decoder | 9 layers, output vocabulary ≈ 14,100 (≈ 8,000 whole-line labels + 6,000 sub-line pieces + characters and markers), 8 memory-prefix tokens, rotary positions |
+| Text decoder | 8 layers, 16 heads, 32,000-token byte-level BPE vocabulary, context 2,048, answer tokens per training sequence ≤ 384, prompt tokens ≤ 256 |
 | Decoder context | 170,000 positions ceiling; 140,000 training length; curriculum from ≈ 4,096 over the first quarter of the run |
 | Graph budget | 12,288 nodes after collapse |
 | Replay buffers | 256 entries each (language, code); anchors from the latest 32 |
 | PPO | policy head with 1,024-way action space; buffer of 32; decoder RL every few steps (six by default) |
-| Math core | 69 units, 28 constants, 45 formulas, 8 curriculum templates, 16-dimensional feature vector, < 1 M learned parameters |
+| Math core | 69 units, 32 constants, 121 formulas (each with an independent reference value), 5 engineering helpers, 8 curriculum templates, 16-dimensional feature vector, < 1 M learned parameters |
 | Data feeding | 25 parse processes (28 vCPU pod: CPUs − 3); size-weighted interleave of 32 units (byte ranges of the two huge files); shuffle buffer bounded by measured bytes (10 % of the RAM budget, ≤ 1 M samples) |
 | Data files | `train.jsonl` (code) + `lmltrain.jsonl` (language), ≈ 275–285 GB, 3 rounds over both |
 | SSD cache | 80 GB total: 53.6 GB pinned shard cache, 18.4 GB adaptive graph cache, 8 GB spill cache |
@@ -1070,13 +1100,16 @@ These come from the source's own dated change markers and from the hardening pas
 | Checkpoints | 3 rotating slots, fixed-interval saves, atomic writes |
 | Precision | BF16 autocast, TF32 |
 | Training plan | **joint training, 3 full rounds**; each round = one pass over all connected data (hold-out ≤ 0.2 %); ≈ 3 × 111 M sample-exposures at 280 GB |
-| Current data | ≈ 275–285 GB; ≈ 26 effective tokens per parameter at 6.08 B (sizing assumptions: 3.5 bytes/token, 2 effective passes, 20 tokens/parameter target) |
+| Current data | ≈ 275–285 GB; ≈ 26 effective tokens per parameter at 6.10 B (sizing assumptions: 3.5 bytes/token, 2 effective passes, 20 tokens/parameter target) |
 
 ---
 
 ## 25. Realistic Scope & Open Questions
 
 - **A solo, actively evolving system.** The dated change markers in the source show a system that has been run, broken and fixed repeatedly. That is real evidence of engineering care, but a different kind of evidence from an external benchmark.
+- **Free-form text generation has not been trained or run.** The tokenizer, sequence construction (loss on the answer tokens only), routing heuristic and degeneration score were tested; the text decoder itself, its training step, the checkpoint save/load of its weights and optimizer, and the `chat` path were reviewed against the code decoder they reuse but have never executed (no torch here). How fluent, direct and well-reasoned its answers are depends entirely on the language data and the training. The answer depends on the prompt tokens and an 8-token summary from Brain C — there is no retrieval — and training sequences are at most 640 tokens.
+- **Behaviours such as bluntness, calibrated honesty about what the model does not know, or register are not built in.** They are learned from data and steered by the prompt and `system` text; the code provides the hook (`system`), a repetition/emptiness check with retries, and the calibrated abstention that already exists for code — not a guarantee. Reasoning quality in language is not measured by anything in the validator, which judges code.
+- **Brain C is two layers shallower (15) than before** to pay for the text decoder; whether that trade is right is an experiment, not a derivation.
 - **The language stream is verified at the data level only.** Record extraction (five shapes), size-weighted mixing, the mix probe, shard-cache round trips and validation exclusion were tested on synthetic files; the language micro-batch itself (Brain C forward, masked-word loss, in-batch alignment, accumulation slot, queue draining) was reviewed against the existing code but has not run, for want of torch. Its record shapes are the ones I could infer from the loader — if `lmltrain.jsonl` uses a shape not listed in Section 20.1, those records are counted as unusable in the logged mix and skipped; check the logged per-file mix first.
 - **The joint-training path has not been run on a GPU.** It reuses the same forward functions, router, bridge and loss as the sequential phases and passes static checks, but this environment has no torch, so the new branches (single-sample and batched), the Brain C alignment term, round bookkeeping, resume logic and the validation materializer were reviewed against the existing code rather than executed. A short real run — one tiny round, then a resume — should be the first thing done before renting the full run. Joint steps also cost more compute per sample than one sequential phase (all brains run with gradient); whether three joint rounds fit the time budget is a measurement to take, not something derived here.
 - **The piece-vocabulary gain is measured on proxy code, not your corpus.** The 2.85× action-count reduction used source files available in this environment; the whole-line hit rate and the benefit on a 275–285 GB corpus must be measured on the corpus itself. The changed codec also changes the decoder's output size, so checkpoints from the previous codec cannot be loaded into it.
@@ -1097,7 +1130,71 @@ The honest summary: the mechanisms described here are real, were checked against
 
 ---
 
-## 26. Component Index
+## 26. Verification and Test Results
+
+What was run, what it measured, and — equally important — what could not be run. Everything below was executed in a CPU-only sandbox **without torch**; code that needs torch was exercised through a permissive stand-in module so that the pure-Python parts (codecs, data pipeline, math engine, caches, planning) could be imported and tested. Numbers come from held-out or synthetic data as stated; none comes from your corpus.
+
+### 26.1 Static checks (all five files)
+
+| Check | Result |
+|---|---|
+| Byte-compilation | all five files compile |
+| Undefined-name analysis over every scope | 0 findings in all five files |
+| Mutable default arguments, bare `except` | none |
+| Duplicate function bodies | 1 found (the anti-loop guard, two identical copies) — merged into one helper |
+| Dead-code markers | none left |
+
+### 26.2 Math, physics and engineering (verification of the *computations*)
+
+| Test | Result |
+|---|---|
+| Formula table: declared result dimension vs the dimension the expression really produces | **121 / 121** formulas pass |
+| Reference values stored with the 76 added formulas (computed independently of the expression strings) | **76 / 76** match |
+| Literature / textbook values (Hawking temperature of the Sun 6.17×10⁻⁸ K; solar luminosity from R and T; Wien peak at 5772 K; critical density at H₀ = 70; Sun's mass from Earth's orbit; electron Compton wavelength; electron in a 1 nm box 0.376 eV; Balmer H-α; Fermi energy of copper; plasma and cyclotron frequencies; speed of sound in air; N₂ rms speed; tidal acceleration; skin depth of copper; RC cut-off; LC resonance; Snell and Brewster angles; relativistic kinetic energy and velocity addition; and others) | **27 / 27** within tolerance (0.0001 % – 1 %) |
+| Misuse is rejected (a current where a resistance belongs, a length where a capacitance belongs, `asin` outside its domain, `n1 = n2` in the Rydberg formula) | **4 / 4** rejected |
+| E96 series generated by the IEC rounding rule vs the standard 96-value table | identical |
+| Engineering helpers (nearest E-series value, round-up for a limiting resistor, IPC-2221 trace width, dB, resistor divider, LED resistor) | all as expected; every invalid input rejected |
+
+Two of the *first-draft reference numbers* — the Fermi energy of copper (7.0 eV is the textbook rounding of 7.04) and the electron cyclotron frequency (27.99 GHz per tesla, not the 28.02 first written) — were my own mis-remembered values, not engine errors; they were corrected after recomputing by hand. Sample results: IPC-2221 for 1 A, 10 °C rise, 1 oz outer layer gives 0.300 mm (11.8 mil); 3 A gives 1.37 mm outer and 3.56 mm inner; a 5 V → 3.3 V divider from the E24 series comes out as 4.7 kΩ / 9.1 kΩ giving 3.297 V (−0.09 %).
+
+### 26.3 Code codec (held-out real Python and C source files)
+
+| Test | Result |
+|---|---|
+| Encode → decode round trip of every label (comments and blank lines included) | **0 mismatches in 35,866 labels** |
+| Non-blank lines identical, in order, after encode → decode → render | Python **100 %**, C headers **100 %** |
+| Comment lines preserved | Python 1,922 / 1,922; C `//` comments 113 / 113 |
+| Python files that compile after encode → decode → render | **60 / 60** (46 / 60 before the dedent fix) |
+| Exact indentation on 4-space Python | 97.2 % (the rest use other indentation widths; the renderer writes 4 spaces per level) |
+| `generate()` driven by a scripted decoder: slow path = GPU-top-k path = rendered reference | 9 / 9 files; generated code compiles 9 / 9 |
+| Total actions on held-out files, character spelling → piece vocabulary | **2.65× fewer** |
+| Piece vocabulary on proxy corpora (whole-line hit rate 20–47 %): steps per line vs an LLM | roughly parity (0.7–1.3×) instead of 2–3× more |
+| Cost of a decoding decision on the CPU before the GPU top-k path (full sort of allowed ids) | ≈ 1.7 ms per label decision (the GPU-side gain itself needs a GPU to measure) |
+
+### 26.4 Text tokenizer
+
+Exact round trip on 14 test strings including unseen scripts, emoji, control characters and 500-character unbroken runs; ≈ 4 bytes per token on held-out English after 1 MB of learning; encode speed 0.6–1.1 M tokens/s/core; save/load identical; a codec with more merges than the model reserves is refused. Sequence construction was checked: with `BOS · prompt · SEP · answer · EOS`, the supervised targets are exactly the answer tokens plus `EOS`, and no prompt token is supervised.
+
+### 26.5 Data pipeline and caches (synthetic files shaped like `train.jsonl` + `lmltrain.jsonl`)
+
+| Test | Result |
+|---|---|
+| Language-only records recovered from five record shapes (instruction + output, prompt + response, plain text, chat messages, ShareGPT conversations) | all ~9,000 usable ones; the old loader dropped every one |
+| Mix probe vs truth | 6,073 / 8,949 estimated vs 6,000 / ~9,000 |
+| Interleave: every record read exactly once; byte ranges of one file | 6,000 / 6,000, no gap or duplicate |
+| Cross-file mixing: language switches in the first 2,000 samples | 0.00 (one file at a time) → 0.83 |
+| Mix steadiness through a pass (size-weighted choice) | the language share in the last tenths stays ≈ 0.26 (true 0.23); uniform choice dropped to 0.08–0.18 |
+| Priority buffer: calls to the priority function | one per sample (was one per buffered element); ≈ 5 ms → ≈ 10 µs per sample at a 5,000 buffer |
+| Shard cache: identical records on the second pass, both record kinds, byte-range units | identical; stable unit count (pinned) |
+| Cache pruning: directory scans | ≈ 750× fewer at the default cap |
+| Graph cache: stops writing when it cannot cover 20 % of the samples; bundle import never stops | as designed |
+| Training plan: 111.4 M records → 3 rounds | 334.2 M sample-exposures |
+
+### 26.6 Not verified — needs torch / a GPU
+
+The joint-training step (single and batched), the Brain C alignment term, the language micro-batch, the text-decoder training step and its checkpointing, resume bookkeeping, the validation materializer under real data, the GPU top-k closure, escalation, the VRAM governor, and every claim about speed or GPU utilization. These were reviewed against the code they reuse and pass static analysis, but **have never run**. Measured memory and throughput on the B200 are unknown. A short real run — one tiny round, a kill and a resume, a `chat` call, a `fittext` — should come before the full run.
+
+## 27. Component Index
 
 | Concept | Main components | File |
 |---|---|---|
@@ -1111,13 +1208,14 @@ The honest summary: the mechanisms described here are real, were checked against
 | MoE routing | `FlyPromptRouter`, `TemporalEnsembleExpert`, `ExpertCommsBlock` | codemind_brain_dual.py |
 | Bridge | `AntiForgetBridge` | codemind_brain_dual.py |
 | Graph collapsing | `GraphCollapser`, `CollapseStats` | codemind_brain_dual.py |
-| Generation | `GraphActionCodec`, `CodeDecoder`, `GraphRenderer`, `LargeCodeHandler` | CodeMind.py |
+| Generation (code) | `GraphActionCodec`, `CodeDecoder`, `GraphRenderer`, `LargeCodeHandler` | CodeMind.py |
+| Generation (free-form text) | `TextCodec`, text decoder (`CodeDecoder` instance), `chat_ex`, `respond` | CodeMind.py |
 | Validation | `CodeValidator`, `StaticAnalyzer`, `IntegrityChecker`, `CodePurityChecker`, `QualityEngine` | CodeMind.py |
 | Supervised losses | `CodeMindLoss`, `LanguageMaskHead`, `LossBalancer`, `AppropriatenessHead` | CodeMind.py |
 | RL — policy head | `CodePolicyHead`, `PPOAgent` | CodeMind.py |
 | RL — decoder | `generate_rl`, `_decoder_rl_step`, `RunningBaseline` | CodeMind.py |
 | RL — reward | `CuriosityPPOReward`, `PPORewardBreakdown`, `RewardWeightAdapter`, `CuriosityMemory`, `TrustTracker`, `ExperienceBank` | CodeMind.py |
-| Math engine | `evaluate`, `calc`, `Quantity`, `FORMULAS`, `solve_linear_exact`, `find_root`, `integrate`, `derivative`, `ode_rk45`, `verify_text`, `generate_samples` | CodeMind.py |
+| Math engine | `evaluate`, `calc`, `Quantity`, `FORMULAS` (121), `engineering_calc`, `e_series_nearest`, `pcb_trace_width_ipc2221`, `solve_linear_exact`, `find_root`, `integrate`, `derivative`, `ode_rk45`, `verify_text`, `generate_samples` | CodeMind.py |
 | Math in the learning system | `MathPhysicsService`, `MathPhysicsAdapter`, `MathPhysicsHead`, `ground()` | CodeMind.py |
 | Model sizing and hardware | `estimate_model_params`, `advise_model_size`, `detect_hardware`, `_set_brain_c_trainable`, `_vram_governor` | CodeMind.py |
 | Data | `DataConnector`, `compute_training_plan`, `_ParsePrefetcher`, `_GraphCache` | CodeMind.py |
