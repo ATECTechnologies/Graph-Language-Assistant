@@ -4,7 +4,9 @@
 
 > **Scope and confidentiality.** This document explains *what each part does, how the parts fit together, and why they were built that way*. It deliberately contains no source excerpts, no loss or reward coefficients, no tuned thresholds or learning rates, no regular expressions, no training data and no model weights. Architecture-scale figures (depths, widths, expert counts, context lengths) are included because they are necessary to understand the design.
 >
-> **Status.** The system has been **trial-trained at reduced scale and verified component by component; it has not yet been trained at full scale.** Section 22 lists exactly what was measured and, just as importantly, what was not. No claim in this document is a benchmark claim.
+> **Status.** The system has been **trial-trained at reduced scale and verified component by component; it has not yet been trained at full scale, and it has not been tested on the target accelerator.** Section 22 lists exactly what was measured and, just as importantly, what was not. No claim in this document is a benchmark claim.
+>
+> **Revision.** This edition describes the code as it stands now (five source files, built-in self-test 159 / 159). Compared with the previous edition it adds: group-relative PPO for the decoder and reinforcement learning of the router's gate (Sections 10.6 and 16), a self-supervised structure-learning head (15.2), a rebuilt graph-to-tensor stage with a CPU/device split (7, 21.4), a fused HGT scatter (8.1), a check-and-repair generation loop (13.6), a project overview (5.4), the data-connector changes for code-only and very long records (20), and the measurements and defects from this round (22, 24).
 
 **Repository:** [FWKTechnologies/CodeMind-Code-Intelligence](https://github.com/FWKTechnologies/CodeMind-Code-Intelligence/tree/main) · [LICENSE](https://github.com/FWKTechnologies/CodeMind-Code-Intelligence/tree/main/LICENSE) · [README](https://github.com/FWKTechnologies/CodeMind-Code-Intelligence/tree/main/README.md). The repository is the source of truth for license terms.
 
@@ -31,7 +33,7 @@
 **Part III — Generation, judgement and learning**
 13. [Generation](#13-generation)
 14. [Validation and quality scoring](#14-validation-and-quality-scoring)
-15. [Supervised objectives](#15-supervised-objectives)
+15. [Supervised and self-supervised objectives](#15-supervised-and-self-supervised-objectives)
 16. [Reinforcement learning](#16-reinforcement-learning)
 
 **Part IV — Built-in services**
@@ -69,13 +71,13 @@ They are joined by **one learned anti-forget bridge** and steered by **one mixtu
 
 **Learning has three layers**, run as **joint training** — all three brains, the bridge, the router and both decoders train together, for **two full rounds over all connected data**:
 
-1. **Supervised objectives** align instructions, code understanding and code targets, and teach the decoders by teacher forcing.
-2. **A two-level reinforcement-learning system.** *Level 1* is a clipped-objective PPO head that learns calibrated confidence, so the model knows when to abstain. *Level 2* is a trajectory-level policy gradient on the decoder driven by a multi-layer automated validator, which teaches the decoder to produce code that actually validates — something cross-entropy cannot teach.
+1. **Supervised and self-supervised objectives** align instructions, code understanding and code targets, teach the decoders by teacher forcing, and — new — make the model *discover relations by itself*: a share of the graph's edges is hidden from message passing and the model must predict them, so structure is learned from context rather than copied from whatever a parser emitted (Section 15.2).
+2. **A two-level reinforcement-learning system.** *Level 1* is a clipped-objective PPO head that learns calibrated confidence, so the model knows when to abstain. *Level 2* is **group-relative PPO (GRPO with a clipped, token-level objective)** on the decoder, driven by a multi-layer automated validator: several answers are sampled for one task, ranked against each other, and the decoder — and the mixture-of-experts router's gate, through genuinely stochastic routing — is pushed toward the answers that validate. That is something cross-entropy cannot teach.
 3. **A math and physics core inside the architecture.** A deterministic engine (exact arithmetic, SI units with dimensional analysis, 121 verified physics, electronics and engineering formulas) feeds the model's representations, supplies self-computed labels, contributes a verified problem curriculum to the same training stream, scores generated claims in the RL reward, and corrects wrong arithmetic at generation time.
 
-**Around the core** sit a policy-driven linguistic-safety module, a web-search subsystem engineered never to hang, leak or trust what it fetches, and a resumable offline graph-cache builder so that accelerator time is never spent on parsing.
+**Around the core** sit a policy-driven linguistic-safety module, a web-search subsystem engineered never to hang, leak or trust what it fetches, a resumable offline graph-cache builder so that accelerator time is never spent on parsing, and — new — a **check-and-repair generation loop** and a **project overview** that give a language-independent big picture of a repository (Sections 13.6 and 5.4).
 
-**Scale.** The architecture arithmetic gives **about 6.10 billion parameters**, inside a 6.0–6.2 B budget, designed to train on **a single high-memory accelerator (≈180 GB class)**. Model size is not a fixed constant: it is cross-checked against the *measured* size of the training data, and Brain C's depth is the knob that moves it.
+**Scale.** The architecture arithmetic gives **about 6.11 billion parameters**, inside a 6.0–6.2 B budget, designed to train on **a single high-memory accelerator (≈180 GB class)**. Model size is not a fixed constant: it is cross-checked against the *measured* size of the training data, and Brain C's depth is the knob that moves it.
 
 ---
 
@@ -109,6 +111,8 @@ flowchart TB
       GC --> PF[Parse prefetch workers<br/>separate processes]
       D --> PF
       MC[Math curriculum<br/>engine-verified rows] --> PIPE
+      D --> LP[Language CPU stage<br/>worker thread, one batch ahead]
+      LP --> PIPE
       PF --> PIPE[Training pipeline<br/>joint training · 2 full rounds]
       PIPE --> CK[(Checkpoints<br/>rotating · atomic)]
       PIPE --> Q[Quality engine 0–100%]
@@ -146,8 +150,8 @@ flowchart LR
 
 | File | Role |
 |---|---|
-| `CodeMind.py` | The core: math engine, language registry and parsers, graph schema, encoder, HGT layers and brains, both decoders and the action codec, validator and quality engine, PPO and reward engine, losses, data connector, training pipeline, sizing advisor, runtime configuration, HTTP API, CLI, release packaging |
-| `codemind_brain_dual.py` | Multi-brain machinery: router, experts and expert-communication block, anti-forget bridge, graph collapser, the orchestrator that runs the brains, persistence |
+| `CodeMind.py` | The core: math engine, language registry and parsers, graph schema, encoder and tensorizer, HGT layers and brains, both decoders and the action codec, validator and quality engine, PPO / GRPO and reward engine, losses and the structure head, data connector, training pipeline, sizing advisor, review / check-and-repair generation and project overview, runtime configuration, HTTP API, CLI, release packaging |
+| `codemind_brain_dual.py` | Multi-brain machinery: router (including its stochastic-routing mode for reinforcement learning), experts and expert-communication block, anti-forget bridge, graph collapser, the orchestrator that runs the brains, persistence |
 | `build_graph_cache.py` | Offline, CPU-only builder of parsed graphs and validator results |
 | `search.py` | Web search and page retrieval (deliberately neutral) |
 | `linguistic_safety.py` | Policy-driven linguistic safety, PII and secret detection |
@@ -160,7 +164,7 @@ flowchart LR
 | Three stacks of **one** HGT class (language, understand, edit) joined by a learned bridge | One shared stack doing everything, or three unrelated models |
 | A system whose expert mixture operates on **one pooled vector per graph** | A token-level sparse MoE inside the transformer layers |
 | Trained by supervised objectives **and** reinforcement learning against an automated validator | Trained purely by next-token prediction |
-| A model where **RL shapes the decoder and the confidence head** while supervised losses shape the brains | A system where policy-gradient signal reaches every layer |
+| A model where **RL shapes the decoder, the router's gate and the confidence head** while supervised and self-supervised losses shape the brains' HGT weights | A system where policy-gradient signal reaches every layer |
 | A code generator restricted to structurally valid actions from a closed vocabulary | A free-form sampler over open text (that is the *text* decoder's job, and it is separate) |
 | Language-agnostic: one schema and one set of weights for all programming and human languages | A family of per-language models |
 | Numerically grounded: an exact engine is *inside* the learning loop | A model that guesses numbers and hopes |
@@ -172,7 +176,7 @@ flowchart LR
 
 ### 4.1 Parameter budget (≈ 6.1 B)
 
-Computed analytically from the configuration by the same formulas the code uses; hidden width is 1,664 throughout. At start-up the system logs the **real** count (every module, shared weights counted once) next to this estimate.
+Computed analytically from the configuration by the same formulas the code uses; hidden width is 1,664 throughout. At start-up the system logs the **real** count (every module, shared weights counted once) next to this estimate. The analytic estimate (6.102 B) does not include the optional structure head (Section 15.2, ≈ 11.3 M parameters at this width), which brings the total to about 6.11 B.
 
 | Component | Structure | ≈ Parameters |
 |---|---|---|
@@ -184,13 +188,14 @@ Computed analytically from the configuration by the same formulas the code uses;
 | Router | 12 experts + expert-communication block | 0.16 B |
 | Anti-forget bridge | gated fusion | 0.02 B |
 | Encoder, fusion, policy head, small heads, math core | hashed token encoder (with open language slots), semantic fusion, PPO head, auxiliary heads, math adapter + head | ≈ 0.06 B |
-| **Total** | | **≈ 6.10 B** |
+| Structure head | self-supervised relation head (Section 15.2); optional | ≈ 0.011 B |
+| **Total** | | **≈ 6.11 B** |
 
 One HGT layer is ≈ 168 M parameters, almost all of it the **per-node-type** query/key/value/output projections; the per-relation attention tensors add only ≈ 1.3 M per layer. Depth is therefore the main size lever: each layer costs ≈ 0.17 B, and Brain C — the newest and least proven brain — is the one adjusted first.
 
 ### 4.2 Memory
 
-Weights, gradients and optimizer state cost **≈ 16 bytes per parameter** — about **98 GB** at 6.10 B. On a ≈ 180 GB accelerator that leaves roughly **80 GB** for everything that scales with the input: decoder activations at long context, HGT activations over graphs of up to 20,480 nodes, router and PPO buffers, and allocator overhead. Several design decisions exist specifically to live inside that margin:
+Weights, gradients and optimizer state cost **≈ 16 bytes per parameter** — about **98 GB** at 6.11 B. On a ≈ 180 GB accelerator that leaves roughly **80 GB** for everything that scales with the input: decoder activations at long context, HGT activations over graphs of up to 20,480 nodes, router and PPO buffers, and allocator overhead. Several design decisions exist specifically to live inside that margin:
 
 - **Linear-memory attention** in the decoder (fused kernel): memory grows linearly with context, compute stays quadratic.
 - **Chunked, checkpointed output loss.** At a 150,000-position training length a naïve logits tensor would be tens of gigabytes. The loss is computed in chunks, each recomputed in the backward pass, so the full logits tensor never exists.
@@ -211,7 +216,7 @@ Model size follows data size. Two functions tie them together: an analytic param
 | 210 GB | 120 B | ≈ 6.0 B |
 | 280 GB | 160 B | ≈ 8.0 B |
 
-For the current corpus (≈ 275–285 GB) the rule supports roughly 8 B parameters. The configuration deliberately stays below that, inside a 6.0–6.2 B budget set by memory headroom, which puts the 6.10 B model at **≈ 26 effective tokens per parameter** — comfortably in the "appropriate" band (the advisor's verdicts are *too little data* below 10, *appropriate* from 10 to 60, *model smaller than the data supports* above 60). Because CodeMind consumes graphs rather than token sequences, the rule is an *anchor, not a law*. The advisor runs every time data is connected; it **reports but never rebuilds**, because changing depth after training would make checkpoints unloadable.
+For the current corpus (≈ 275–285 GB — about 180 GB of code pairs and about 100 GB of natural-language records spread over roughly twenty human languages) the rule supports roughly 8 B parameters. The configuration deliberately stays below that, inside a 6.0–6.2 B budget set by memory headroom, which puts the 6.11 B model at **≈ 26 effective tokens per parameter** — comfortably in the "appropriate" band (the advisor's verdicts are *too little data* below 10, *appropriate* from 10 to 60, *model smaller than the data supports* above 60). Because CodeMind consumes graphs rather than token sequences, the rule is an *anchor, not a law*. The advisor runs every time data is connected; it **reports but never rebuilds**, because changing depth after training would make checkpoints unloadable.
 
 ### 4.4 The training plan from real data
 
@@ -263,6 +268,18 @@ Brain C has no tokenizer of its own. `build_language_graph` turns text in **any*
 
 `NLDetector` identifies language and script **without a fixed language list**. It combines script analysis, function-word evidence and learned character-trigram profiles, returns a language code, a script and a confidence, and reports `und-<Script>` when the script is recognized but the language is not. Languages that are *not* recognized are not collapsed into "unknown": their trigram profiles are **clustered online** into discovered groups (`x-<script>-N`, bounded in number), so the same unfamiliar language is recognized consistently from sample to sample and can be balanced in the training order like any other. The detector is thread-safe, learns only from labels it sees in real data, and is bounded so it cannot grow without limit. It also picks the right safety rules per message and powers the `langs` command that reports which human languages the training data actually contains.
 
+### 5.4 Project overview
+
+`project_overview(files)` answers *"what is in this repository and how does it hang together"* without running the neural stack, so it works on any size of project and any mix of languages, and it costs only parsing and validation. It returns:
+
+- **Languages** with the number of lines in each.
+- **Per-file rows**: language, node count, lines, defined symbols, the files it uses, how many files use it.
+- **Dependency map.** A file *uses* another when it mentions a symbol the other defines. Rules that keep it honest: a symbol defined locally shadows other files; when a name is defined in several files, same-language owners win; a name defined in several files of *different* languages and used from none of them is left unlinked rather than guessed. This is name-level matching, not import resolution (Section 26).
+- **Core files** (the most depended-upon), **likely entry points** (conventional names, or files nobody uses that use others), **dependency cycles** (strongly connected components found with an iterative Tarjan pass, so deep projects cannot overflow the stack), and **isolated files**.
+- **Health.** With `check` on, each file goes through the validator in its own language; the worst files come first, with their top issues. A file that fails to validate is reported, never allowed to hide the rest of the overview.
+
+The neural path for the same question is `understand_project`, which merges the files into one graph, collapses it and runs the brains; the overview is the fast, inspectable, deterministic counterpart.
+
 ---
 
 ## 6. The graph schema
@@ -286,7 +303,12 @@ Every relation has **its own learned attention weights** inside the HGT. Because
 
 **`TokenEfficientEncoder`** turns a node's text into a vector with **no fitted vocabulary**. Each token contributes a hashed-identity embedding and a bucket embedding; a projection combines them; **language** and **language-family** embeddings (sized by the *open* slot space, so ad-hoc languages have a place) and a **node-type** embedding are mixed in through small learned gates. Per-position embeddings and an attention pooling with a learnable query add word-order sensitivity through a gate that starts almost closed, so the encoder begins near a plain average and learns how much order matters. Being hash-based, it needs no fitting and works for every script — which is exactly why Brain C needs no tokenizer. Hash results are memoized and whole batches of nodes are embedded in a single tensor operation.
 
-**`GraphTensorizer`** converts a graph into per-type feature tensors and per-relation edge-index tensors, and can pack many graphs into one **block-diagonal batch** with per-graph index vectors so pooling stays per graph. **`SemanticFusion`** combines the token-efficient encoding with the HGT output.
+**`GraphTensorizer`** converts graphs into per-type feature tensors and per-relation edge-index tensors, and packs many graphs into one **block-diagonal batch** with per-graph index vectors so pooling stays per graph. It is split into two stages on purpose:
+
+1. **CPU stage — `prepare_graph`.** Subsampling to the node budget, per-type node positions, language and family slots, and the relation edge lists as CPU tensors. It touches no accelerator and no autograd, so it is a pure function of the graph and can run ahead of time on a worker thread (Section 21.4).
+2. **Device stage — `assemble_batch`.** The encoder is learnable and must stay inside the autograd graph, so this stage cannot be moved off the accelerator — but it is now a **single pass**: every node of every graph in the batch is encoded together (in length-bucketed chunks, so padding stays small and the masked pooling makes the result independent of it), block-diagonal edge offsets and per-graph index vectors are built on the CPU, and each tensor crosses to the accelerator once (pinned memory and a non-blocking copy on CUDA). The previous design encoded graph by graph and created many tiny device tensors per graph.
+
+The output is bit-identical to the previous implementation (Section 22.7). **`SemanticFusion`** combines the token-efficient encoding with the HGT output.
 
 ---
 
@@ -301,6 +323,7 @@ The layer implements type-specialized attention (Hu et al., WWW 2020):
 - Attention is normalized **per destination node** across all incoming edges, aggregated per destination, combined with a skip connection, passed through dropout and layer-normalized **per node type**.
 - Key and value projections depend only on the source type, so each is computed **once per forward pass** and cached.
 - The per-destination softmax is **fully vectorized** with scatter reductions.
+- **One scatter per destination type.** The messages of every relation that ends in the same node type are concatenated and added into the destination in a single operation, with in-degrees obtained from one bincount — instead of two scatter operations per relation. The sums are the same; the number of kernel launches and the contention on destination rows are not (Section 22.7).
 
 ### 8.2 `HGTBrain`
 
@@ -347,8 +370,9 @@ flowchart LR
 - **Brain C needs its own signal.** In the chain, Brain C reaches Brain A through a *detached* fusion, so the main loss does not train it. Joint steps therefore add an explicit **alignment term** (a contrastive objective against a bank of recent target embeddings plus a cosine term; the target side is detached, so it trains Brain C alone) together with a masked-word objective. The alignment is weighted **stronger in round 1 and relaxed in round 2**, so language understanding is learned first and then maintained while code skills and generation take over.
 - **Masked words in only some steps**, because hiding words would also feed a masked prompt into Brain A's conditioning.
 - **Anti-forgetting across rounds.** At the end of each round the bridge's anchor is refreshed and blended with its history, so the next round is penalized for drifting from what the previous one learned (Section 11).
-- **Decoder RL waits for a decoder worth rolling out.** Rollouts from a barely trained decoder are mostly broken, so decoder RL runs several times less often in round 1 and at its normal cadence in the final round.
-- **The language file trains Brain C directly.** Language-only records are trained in separate **language micro-batches** through Brain C alone, with masked-word prediction and — for records with a response or translation — a **symmetric in-batch contrastive alignment** between text and response (the other pairs in the batch are the negatives; for translation pairs this aligns the two languages). A plain-text record is split at a sentence boundary into prompt and continuation, so it yields an alignment pair too. A language micro-batch is a full gradient-accumulation slot, so the optimizer and schedule treat both kinds of data uniformly. A fraction of language micro-batches also trains the **text decoder** from the Brain C embeddings already computed.
+- **Structure self-supervision rides on Brain A.** In a fraction of joint steps a share of the source graph's edges is removed from message passing and the structure head must recover them from Brain A's node states (Section 15.2).
+- **Decoder RL waits for a decoder worth rolling out.** Rollouts from a barely trained decoder are mostly broken, so decoder RL runs several times less often in round 1 and at its normal cadence in the final round. The RL step runs **after** the batch's backward pass, never before it: it updates the router's gate in place, which a still-pending graph would otherwise need (Section 24).
+- **The language file trains Brain C directly.** Language-only records are trained in separate **language micro-batches** through Brain C alone, with masked-word prediction and — for records with a response or translation — a **symmetric in-batch contrastive alignment** between text and response (the other pairs in the batch are the negatives; for translation pairs this aligns the two languages). A plain-text record is split at a sentence boundary into prompt and continuation, so it yields an alignment pair too. A language micro-batch is a full gradient-accumulation slot, so the optimizer and schedule treat both kinds of data uniformly. Its CPU stage (text → word graph → tensors) is computed on a worker thread for the *next* micro-batch while the accelerator trains on the current one. A fraction of language micro-batches also trains the **text decoder** from the Brain C embeddings already computed.
 - **Decoder training runs before the main backward pass**, from the embedding already in hand, so the shared graph is still intact for the brain-side loss.
 - A **round-end checkpoint** is written after every round in addition to periodic ones.
 
@@ -416,7 +440,16 @@ Auxiliary losses from **every** router call in a step are averaged and added onc
 
 ### 10.5 Execution
 
-The router runs eagerly by design (expert selection depends on tensor values, which would force compiler graph breaks). The bridge — pure matrix arithmetic — is compiled instead, with a permanent eager fallback if compilation fails on first real use.
+The router runs eagerly by design (expert selection depends on tensor values, which would force compiler graph breaks). The bridge — pure matrix arithmetic — is compiled instead, with a permanent eager fallback if compilation fails on first real use. Per call, the router performs one host synchronization (its logging scalars and the chosen expert indices are fetched together), because sparse expert dispatch needs the indices on the host.
+
+### 10.6 Stochastic routing for reinforcement learning
+
+Ordinary routing is deterministic top-k, and a policy gradient on a deterministic choice is meaningless: there is nothing to explore and no probability to differentiate. For RL the router therefore has a separate sampling mode:
+
+- **Plackett–Luce sampling via Gumbel-top-k.** The 3 experts are drawn without replacement with probability proportional to the gate's softmax, which is exactly the distribution whose log-probability can be differentiated. Each routing decision is recorded (the pooled input, the task id, the chosen experts).
+- **Gate only.** The RL loss — the group-relative advantage times the log-probability of the sampled selections — updates the gate, the per-brain bias table and the pre-normalization, through a **separate optimizer with its own learning rate**. The experts themselves are untouched.
+- **No interference with the main objective.** The RL gradient is taken with an explicit gradient call and the gradients pending from the main objective (gradient accumulation) are restored afterwards, so RL neither wipes nor mixes with them.
+- **Off by default outside RL.** Sampling is switched on only inside the decoder-RL step, around the forward passes that produce the group's rollouts, and always switched off and flushed in a `finally` block. Training and inference routing are unchanged.
 
 ---
 
@@ -469,8 +502,9 @@ Anchors are maintained **online-EWC style**: updated from recent replay embeddin
 The production decoder is **deterministic greedy** with an anti-cycle guard that triggers only on genuine runaway repetition (ordinary code legitimately repeats closing braces and directives). Greedy decoding gives repeatable answers; for callers that want to spend more compute, CodeMind provides:
 
 - **`generate_rl`** — a stochastic, gradient-tracking sampler used by reinforcement learning.
-- **`generate_best_of`** — diverse candidates re-ranked by the validator.
-- **Math guard** — before validation, wrong "expression = value" claims are corrected by the deterministic engine (Section 17.6).
+- **`generate_best_of`** — diverse candidates re-ranked by the validator. The deterministic answer is always candidate 0, so the result can tie or improve but never get worse; the caller's output budget now applies to the sampled candidates as well (previously they ignored it).
+- **`generate_checked`** — the check-and-repair loop (Section 13.6).
+- **Math guard** — before validation, wrong "expression = value" claims are corrected by the deterministic engine (Section 17.2).
 - **Structural repair** — deterministic closing of unbalanced brackets and unterminated block comments (Section 5.1).
 - **Escalation.** The deterministic answer is the fast path and stays the answer whenever the validator accepts it. Only if the validator rejects it (invalid or unsafe, but not "cheating", which abstention handles) does `generate()` spend extra compute: a few stochastic candidates are sampled and re-ranked by the same validator, with the first answer kept as candidate 0 so the result can tie or improve but never get worse. Answers that pass pay nothing.
 - **Abstention.** If validation says the output is unsafe to ship (a cheating pattern, hollow code, demonstrably wrong behavior, too many errors), `generate()` abstains unless forced. Abstention text is language-neutral, written in the comment syntax of the requested language.
@@ -492,6 +526,15 @@ How good the answers are — vocabulary, register, directness, whether the model
 
 `LargeCodeHandler` edits or generates code from 10,000 to 500,000+ lines by chunking at function and class boundaries, carrying a **semantic context embedding** from chunk to chunk in addition to textual tail context, and stitching outputs with indentation preserved. It streams, so the whole file is never resident.
 
+### 13.6 Check and repair
+
+Two public methods put the validator at the user's disposal:
+
+- **`review_code(code, language)`** judges any code — model-written or human-written — in any language with the same validator the training loop uses, and returns validity, score, whether the output looks like cheating, and the individual issues (severity, line, rule, message). It needs no trained weights.
+- **`generate_checked(prompt, language, rounds, n)`** is a bounded **generate → check → repair** loop. It generates a best-of-*n* answer, reviews it, and if it is invalid (and not a cheating pattern) regenerates with the concrete problems found appended to the prompt, for a limited number of rounds. A new answer replaces the old one only if it is valid or scores strictly higher, so the loop **cannot return something worse than its first answer**; the score history of every round is returned with the code and its final review.
+
+This is deliberately an outer loop over existing, individually tested pieces (deterministic structural repair, escalation, validator) rather than a new network. It improves the *odds* of a valid answer at the price of extra generations; whether it does so measurably for a trained model has not been evaluated (Section 22.6).
+
 ---
 
 ## 14. Validation and quality scoring
@@ -511,7 +554,9 @@ How good the answers are — vocabulary, register, directness, whether the model
 
 ---
 
-## 15. Supervised objectives
+## 15. Supervised and self-supervised objectives
+
+### 15.1 Supervised objectives
 
 `CodeMindLoss` combines six objectives: **contrastive alignment** between source and target embeddings (a small bank of recent targets supplies genuine negatives, since a single pair per step would make the similarity matrix trivial); a **semantic** objective on the fused understanding; **validity** prediction against the validator; a **graph-structure** objective; a **policy** term (logging the PPO head's loss); and the **issue-type** multi-label objective trained from real validator findings. Auxiliary terms are added on top: the router's averaged balancing loss, the math head's loss for rows with engine-computed labels, and — in joint training — the Brain C alignment, masked-word and anti-forget terms and the language micro-batch loss.
 
@@ -520,6 +565,18 @@ How good the answers are — vocabulary, register, directness, whether the model
 **A controlled gradient bridge.** The decoder does not see the brain's embedding raw. A *soft bridge* passes forward the full value but lets only a **small, fixed fraction** of the decoder's gradient flow back into the brains. Cutting it entirely would mean generation quality never influences understanding; letting all of it through would let the decoder's loss, whose scale differs greatly from the understanding losses, pull representations until the objectives collide. The PPO head's states, by contrast, are *fully* detached, because they are buffered across many steps and keeping their graphs alive would be enormously expensive.
 
 Gradient accumulation gives an effective batch of roughly a thousand samples per optimizer update.
+
+### 15.2 Self-supervised structure learning
+
+Every other structural signal in the system is *given*: a parser or the universal reader decides what the edges are, and the model is told to use them. For languages with no grammar the reader is heuristic, so the model risks learning only what the heuristic happened to emit. The **structure head** removes that dependence on ready-made relations:
+
+1. **Hide edges.** In a fraction of joint steps, a share of the source graph's edges (per relation, bounded in number) is withheld from message passing — the DropEdge idea.
+2. **Link prediction.** From Brain A's node states, the head must score each hidden edge above an equally sized set of random node pairs of the same types, with a relation-specific interaction term.
+3. **Relation typing.** For each hidden edge it must also say which relation it was. Relation names are **hashed into a fixed number of buckets**, so new relation kinds, new languages or new builders need no change to the model.
+
+Because it is trained on whatever graph the pipeline produced, it applies equally to a Python AST, a tree-sitter graph and a universal-reader graph, and the only way to predict a hidden edge is to have learned how nodes relate from context. At inference, `suggest_relations(source, language)` runs the same head over *absent* candidate pairs and returns the most plausible missing relations, with their score and source lines — a way to surface structure the parser missed.
+
+It adds roughly 11 M parameters and a small weighted term to the loss, is disabled for the run if it ever fails, and is saved and loaded with the rest of the model (its parameters are appended last, so older checkpoints still load and the optimizer's parameter order is unchanged). It is a mechanism, not a result: the effect on downstream quality has not been measured (Section 22.6).
 
 ---
 
@@ -537,29 +594,41 @@ flowchart TB
       PPO1 --> PH
       PH --> CONF[calibrated confidence → abstention]
     end
-    subgraph L2[Level 2 — decoder trajectory policy gradient]
+    subgraph L2[Level 2 — group-relative PPO on the decoder and the router gate]
       SRC[source] --> U[understand · no grad]
       U --> EMB[embedding]
-      EMB --> RO[stochastic rollout · cached · grad-tracked]
-      RO --> CODE[generated code]
+      EMB --> RO[G stochastic rollouts<br/>cached · no grad · each with its own sampled routing]
+      RO --> CODE[G generated programs]
       CODE --> VAL[Validator] --> RE2[Reward engine + issue-fix bonus]
-      RE2 --> PG[policy-gradient step · decoder weights only]
+      RE2 --> ADV[advantage = reward vs. the group]
+      ADV --> PG1[PPO-clip on the decoder · parallel log-prob replay]
+      ADV --> PG2[Plackett–Luce policy gradient on the router gate]
     end
 ```
 
-| | Level 1 — policy head | Level 2 — decoder RL |
+| | Level 1 — policy head | Level 2 — decoder and router RL |
 |---|---|---|
-| Nature | Single-step (contextual bandit) on the pooled understanding | Sequential decisions: each generated action is a step of a genuine MDP |
-| Trains | The small policy head (actor, critic, confidence) | The **decoder's own weights** |
-| Reward source | Validator result on the **training target** | Validator result on the **model's own generation** |
+| Nature | Single-step (contextual bandit) on the pooled understanding | Sequential decisions: each generated action is a step of a genuine MDP; each routing choice is a step of a small policy of its own |
+| Trains | The small policy head (actor, critic, confidence) | The **decoder's weights** and the **router's gate** (gate, per-brain bias, pre-norm) |
+| Reward source | Validator result on the **training target** | Validator result on the **model's own generations** |
+| Baseline | Learned critic with GAE | **The group itself** — no critic, no extra parameters |
 | Purpose | **Calibrated confidence** — knowing when to abstain | **Behavior shaping** — code that validates, which cross-entropy cannot teach |
-| Reaches the brains? | No (states detached) | No (`understand()` runs without gradient) |
+| Reaches the HGT brains? | No (states detached) | No (`understand()` runs without gradient; the router sits after the brains' pooling) |
 
-**An honest consequence:** neither RL level sends gradient into the three brains. The brains are shaped by supervised objectives (including the small controlled fraction of decoder gradient); RL shapes the **decoder** and the **confidence head**. That is a deliberate design choice: the brains' representations stay anchored by supervised signal while RL tunes behavior where a non-differentiable outcome matters.
+**An honest consequence:** neither RL level sends gradient into the HGT weights of the three brains. They are shaped by supervised and self-supervised objectives (including the small controlled fraction of decoder gradient). RL shapes the **decoder**, the **router's gate** and the **confidence head**. That is a deliberate design choice: the brains' representations stay anchored by supervised signal while RL tunes behavior where a non-differentiable outcome matters.
 
-### 16.2 Level 2 — decoder trajectory RL
+### 16.2 Level 2 — group-relative PPO
 
-Teacher-forced cross-entropy teaches imitation of the next action. It can never teach "the code I generated on my own actually works", because that signal arrives at the end of a whole generation. Every few steps the loop performs one **rollout**: embed the source in inference mode; sample a full action sequence stochastically with the anti-cycle guard as a probability mask; a rollout that never reaches a proper end still yields a **negative reward** (a bad rollout teaches as much as a good one); otherwise the code goes through the full validator, optionally compared against the target's real behavior and data-flow structure; the reward engine scores it with the model treated as *committing* to its answer; an **issue-fix bonus** rewards removing the source's statically detected issues, tying *detection* and *repair* to one signal. The advantage is the reward minus a **running baseline** (a single smoothed scalar — no value network, no extra parameters), and the update is the trajectory's log-probability times the advantage, with clipping, through the decoder's own optimizer. Because each rollout is used for exactly one on-policy update, a clipped surrogate would add nothing; Level 2 is a baseline-subtracted policy gradient. The step is wrapped so any failure is logged once and never interrupts training.
+Teacher-forced cross-entropy teaches imitation of the next action. It can never teach "the code I generated on my own actually works", because that signal arrives at the end of a whole generation. Every few steps the loop runs one **group**:
+
+1. **Roll out *G* answers for one task** (a small group, four by default). The source is embedded once in inference mode; each answer is sampled stochastically with incremental, cached decoding and no autograd graph, at slightly different temperatures. The structural grammar and the anti-cycle guard act as a **mask over the allowed actions**, and the exact allowed set at every step is recorded. For the router, answer 0 uses ordinary routing as an anchor while the others use sampled routing (Section 10.6), so each answer may also differ in *which experts* shaped its embedding.
+2. **Score each answer** with the full validator (optionally compared with the target's real behavior and data-flow structure) through the same reward engine, with the model treated as *committing* to its answer, plus an **issue-fix bonus** that rewards removing the statically detected issues of the source — tying detection and repair to one signal. A rollout that never reaches a proper end gets a **negative reward**: a bad rollout teaches as much as a good one.
+3. **Advantage = reward relative to the group** (centred and scaled by the group's spread). There is no value network and no drifting running baseline. **A group in which every answer scored the same carries no signal and is skipped** — no gradient step is wasted on it.
+4. **Replay the log-probabilities in one parallel forward pass.** Sampling is sequential, but the probability of the sampled actions under the *current* weights is not: the rollout is replayed with teacher forcing in a single pass, under exactly the same action mask and temperature as at sampling time. This was checked against the incremental sampler's own probabilities (they agree to floating-point noise, Section 22.2), which is what makes the importance ratio valid.
+5. **Clipped update.** A PPO-clip objective with an **asymmetric** clip range (more room to raise a good action's probability than to lower a bad one's, which keeps exploration alive), averaged over *tokens* of the whole group rather than per sequence (so long answers are not down-weighted), plus a small entropy bonus. A few passes are made over the same group, and the loop **stops early when the policy has moved too far** from the one that produced the rollouts.
+6. **Router update.** The same advantages are applied to the sampled routing decisions with a Plackett–Luce policy gradient, through the router's own optimizer (Section 10.6).
+
+Dropout is switched off for the whole step, because a policy gradient needs the policy that sampled to be the policy that is differentiated. The step runs after the batch's backward pass, is wrapped so any failure is logged once and never interrupts training, and always restores the model's mode. Group rewards are tracked over a window and logged as a trend, because a single group is a noisy estimate.
 
 ### 16.3 Level 1 — the policy head
 
@@ -654,8 +723,10 @@ The module's founding principle: **there is no fixed, built-in definition of "ri
 
 `DataConnector` streams training data without loading it all. The corpus is two JSONL families — one of code, one of natural language — about 275–285 GB together and tens of millions of records. Nothing is hard-wired to file names or counts; every record is classified by the same parsers training uses.
 
-- **Code pairs** — an instruction and a code target. These feed the three-brain chain and the decoder.
-- **Language-only records** — instruction + response, prompt + response, plain text, chat messages, or ShareGPT-style conversations. They train **Brain C directly** and, through it, the text decoder. (An earlier loader silently skipped them.)
+- **Code pairs** — an instruction and a code target. These feed the three-brain chain and the decoder. A record that carries **code only** (no instruction) is no longer dropped or fed to the model with an empty prompt: a prompt is synthesized from the code itself — its docstring or leading comment if there is one, otherwise the names it defines, otherwise a completion or rewrite request — so the model always sees an instruction-shaped input. Provenance tags that some corpora store in the `source` field (licenses, repository names) are recognized and ignored rather than mistaken for a prompt or a language.
+- **Language-only records** — instruction + response, prompt + response, plain text (with its human-language label, kind and type when the file provides them), chat messages, or ShareGPT-style conversations. They train **Brain C directly** and, through it, the text decoder. (An earlier loader silently skipped them.)
+
+**Very long records are not cut by default.** The source and target length limits are a million characters, and anything longer is truncated at a **line boundary**, never mid-line; language records are capped at a configurable character count (12,000 by default in the data layer). Human-language codes are kept apart from the programming-language registry, so a language label such as `th` can never claim a programming-language slot.
 
 **Measuring the mix.** At the start of a run the connector probes each file at several offsets, classifies a sample through the same parsers, extrapolates the mix and logs it.
 
@@ -663,7 +734,7 @@ The module's founding principle: **there is no fixed, built-in definition of "ri
 
 ### 20.2 Parallel parsing and the SSD budget
 
-`_ParsePrefetcher` parses upcoming samples ahead of the accelerator on **real separate processes** (threads would be serialized by the interpreter lock). The number of workers is derived from the pod's *real* CPU and memory limits (cpuset affinity, CFS quota, cgroup memory), leaving CPUs for the trainer. The validator also runs in the workers.
+`_ParsePrefetcher` parses upcoming samples ahead of the accelerator on **real separate processes** (threads would be serialized by the interpreter lock). Language micro-batches have their own, lighter pipeline: the text-to-tensor stage of the next micro-batch runs on a single worker thread while the current one trains (Section 21.4). The number of workers is derived from the pod's *real* CPU and memory limits (cpuset affinity, CFS quota, cgroup memory), leaving CPUs for the trainer. The validator also runs in the workers.
 
 One **SSD budget** is shared by three caches: a **pinned shard cache** (a pass visits every file once, so LRU would evict a unit just before it is needed again; pinning keeps the first units cached for later rounds), an **adaptive graph cache** (it measures its record size and stops writing when it could cover too small a fraction of the samples), and a spill cache. Sizes are tracked rather than re-scanned, and the three small memories (mastery, curiosity, trust) are RAM-only above a million samples.
 
@@ -679,20 +750,20 @@ Because parsing needs no accelerator, `build_graph_cache.py` does it once, on or
 
 1. **Stream** the next sample; with the configured probability a math-curriculum row is inserted ahead of it.
 2. **Parse and collapse** source and target (or fetch from the graph cache).
-3. **Forward** Brain C on the word graph, Brain A on the source with C fused, Brain B on the target with A fused — all with gradient, each through the router with its task id.
+3. **Forward** Brain C on the word graph, Brain A on the source with C fused (in some steps with part of the edges withheld for the structure head), Brain B on the target with A fused — all with gradient, each through the router with its task id.
 4. **Math adapter** adds the quantity correction (zero for text without numbers).
 5. **Validate and label.** The validator scores the target; its findings become issue labels.
 6. **Decoder step.** The decoder is trained inline by teacher-forced cross-entropy (before the main backward pass, so shared graphs are still intact).
 7. **Policy head step.** State, action and reward are stored; PPO updates when its buffer is full.
-8. **Loss assembly and backward.** Supervised terms, the joint-training terms, the step-averaged router loss and the math-head loss; gradients accumulate to the configured boundary, where a clipped update is applied (non-finite steps are skipped).
-9. **Language micro-batches** run between code micro-batches whenever a full batch is queued.
-10. **Every few steps:** one decoder RL rollout; periodically a checkpoint, a validation/quality pass and a VRAM-governor check.
+8. **Loss assembly and backward.** Supervised terms, the joint-training terms, the structure-head term when active, the step-averaged router loss and the math-head loss; gradients accumulate to the configured boundary, where a clipped update is applied (non-finite steps are skipped).
+9. **Language micro-batches** run between code micro-batches whenever a full batch is queued; the next one's CPU stage is already being prepared.
+10. **After the batch's backward pass, every few steps:** one decoder-RL group (decoder and router gate); periodically a checkpoint, a validation/quality pass and a VRAM-governor check. The validation pass generates from a bounded number of held-out samples with an output budget tied to each reference's length.
 
 ### 21.2 Optimizer and precision
 
 Every brain-side module sits in **one AdamW optimizer** with warm-up and cosine decay computed against the real total step count; the decoders and policy head have their own. Biases, normalization parameters and embeddings are excluded from weight decay; momentum is restored on resume.
 
-**Precision is BF16 or FP16 only.** BF16 autocast is the default; FP16 with dynamic loss scaling is the fallback where BF16 is unavailable; full precision exists only on CPU. Numerically sensitive pieces (router scores, softmax, expert communication) run in full precision internally.
+**Precision is BF16 or FP16 only.** BF16 autocast is the default; FP16 with dynamic loss scaling is the fallback where BF16 is unavailable; full precision exists only on CPU. Numerically sensitive pieces (router scores, softmax, expert communication) run in full precision internally. On GPUs of the Ampere generation and later the TF32 matrix mode is enabled for any remaining full-precision matmuls, and AdamW uses the fused CUDA kernel where available. FP8 is deliberately absent.
 
 ### 21.3 Memory management and reliability
 
@@ -703,22 +774,45 @@ Every brain-side module sits in **one AdamW optimizer** with warm-up and cosine 
 - **RAM budget** of 75 % of the pod's memory (honoring cgroup limits), bounded caches everywhere, `safetensors` and JSON only for spills.
 - **Checkpoints.** One `.safetensors` file for the whole model plus JSON metadata; components missing from an older checkpoint start from initial values with a warning; three rotating slots with atomic writes and retry; rotation survives restarts; graceful shutdown on `SIGTERM`/`SIGINT` saves instead of losing an interval; a preflight validates the configuration against any checkpoint it is meant to resume and checks disk space.
 
+### 21.4 Throughput design
+
+The aim is that the accelerator is never waiting for the host, and that every host core is doing useful work, **without changing any numerical result**. What was found and done, and — equally — what was not:
+
+| Stage | Before | Now |
+|---|---|---|
+| Code parsing and validation | Separate worker processes, sized from the pod's real limits | Unchanged |
+| Text → word graph → tensors for language micro-batches | On the training thread, with the accelerator idle | CPU stage on a worker thread, one micro-batch ahead; the device stage stays on the training thread because the encoder is learnable |
+| Node encoding | One encoder call per graph | One pass per batch, length-bucketed, same numbers |
+| Host → device transfers | Many small tensors created directly on the device per graph | One transfer per tensor (pinned, non-blocking on CUDA) |
+| HGT message aggregation | Two scatter operations per relation | One per destination type |
+| Validation during training | Unbounded generation for up to twenty samples every pass | A bounded number of samples, output budget tied to each reference |
+| RL step | Could run before the batch's backward pass | After it (also a correctness fix, Section 24) |
+
+**Not done, on purpose.** Accelerator-specific work — graph capture of the decoder, compiling the HGT stack, tuning kernel choices for the B200 — was not attempted: it could not be verified or profiled in the test runs, and unverified compilation is a stability risk. The router's single host synchronization per call, and a few scalar reads per step, remain. These are the first things to profile on the target hardware (Section 26). A profile also corrected a suspicion: the hashing cost seen in an early profile came from the compiler's cache keys, not from the data path; an 18 s file-read figure from the first profile did not recur in the later one (under 1 s), but that was two different runs, so its cause was not isolated.
+
 ---
 
 ## 22. Verification and trial results
 
-This section states exactly what has been measured. **The system has been trial-trained at reduced scale; it has not been trained at full scale, and none of the figures below is a benchmark result.** Figures come from real source files, synthetic data, or reduced-scale runs, as stated. None comes from the full training corpus.
+This section states exactly what has been measured. **The system has been trial-trained at reduced scale; it has not been trained at full scale, it has not been tested on the target accelerator, and none of the figures below is a benchmark result.** Figures come from real source files, synthetic data, or reduced-scale runs, as stated. None comes from the full training corpus.
 
 ### 22.1 Reduced-scale end-to-end trial
 
 A complete **two-round joint-training run** was executed end to end on a deliberately tiny configuration and a few-sample dataset. It completed **with zero failed training steps**. At that scale the loss values are noise and say nothing about model quality — the purpose of such a trial is to exercise the whole path (data stream, parsing, all three brains, router, bridge, decoder, reward engine, round bookkeeping, checkpointing) and expose defects before full-scale time is spent. It did expose several (Section 24), all now fixed and re-run clean.
 
+The trial was repeated in this round on a tiny configuration with the new features switched on — structure self-supervision at every step, decoder-RL groups, and a second data file of 48 multilingual language-only records (some with responses) so that the language micro-batch path actually ran. After the defect described in Section 24 (router update before backward) was fixed, the two rounds completed without errors, the language path ran 24 micro-batches, and one RL group was executed. That group scored identically for both answers (no spread, hence no update), which is the expected behavior of the skip rule on an untrained model — it shows the plumbing, not learning.
+
 ### 22.2 Component and invariant checks
 
 | Check | Result |
 |---|---|
-| Built-in self-test suite (math, codec, graphs, validators, caches, language detection, safety, planning) | **159 checks passed, 0 failed** |
-| Static analysis of all five files (compilation, undefined names, mutable defaults, bare `except`) | Clean apart from one benign optional-import notice |
+| Built-in self-test suite (math, codec, graphs, validators, caches, language detection, safety, planning) | **159 checks passed, 0 failed** (re-run after all changes in this edition) |
+| Static analysis of all five files (compilation, undefined names, mutable defaults, bare `except`) | No undefined names or other findings beyond unused-import notices |
+| Decoder RL: log-probabilities from the one-pass teacher-forced replay vs. those of the incremental sampler, under the same action mask | Equal to ≈ 5 × 10⁻⁶ |
+| Decoder RL step: parameters move when a group has spread; model mode and router sampling state restored afterwards, including after a failure | Verified |
+| Structure head in a joint run | Trains (loss around 1.4–1.5 over two steps — too few to show a trend); save → load → parameters identical; `suggest_relations` returns scored candidate relations with source lines |
+| Review and check-and-repair on an untrained model | Unclosed bracket in Python reported with line and rule; valid JavaScript accepted; the loop returns code, review and a score history |
+| Project overview on a five-file Python / JavaScript / Rust example | Core file, entry points and isolated files as expected; the broken file ranked worst with its syntax error; a name defined in two languages produced no false link or cycle |
 | Chunked output loss vs. the full-logits reference | Equal to within floating-point noise (~10⁻⁹) |
 | Gradient checkpointing with the mode-restoring wrapper vs. un-checkpointed layers | Gradients identical; an earlier version showed a large gradient discrepancy (Section 24) |
 | Unknown-human-language clustering on synthetic multi-language text | ≈ 98 % cluster purity |
@@ -761,14 +855,33 @@ The remaining mismatches are concentrated in constructs the line-oriented codec 
 | Priority buffer cost per sample | Microseconds (was milliseconds, growing with buffer size) |
 | Shard cache second pass | Identical records, stable unit count |
 | Graph cache | Stops writing when it cannot help; bundle import never stops |
+| Data connector on synthetic records shaped like the real files: 4,000 language-only records over twenty labelled languages | All recognized as language records; none dropped |
+| Prompt synthesis for code-only records (docstring, comment header, license header, names only, plain code) | Each shape gets a sensible instruction; license headers are not mistaken for descriptions |
+| Records just under the length limit; human-language codes vs. the programming-language registry | Kept whole; no collisions |
 
 ### 22.6 What has *not* been verified
 
-- **Full-scale training.** Convergence, final quality, and the effect of the 6.1 B configuration are unknown.
+- **Any run on an accelerator.** Nothing in this document was executed on a GPU, let alone the target one. BF16 / FP16 behavior, kernel choices, memory and speed on that hardware are untested.
+- **That reinforcement learning or the structure head improves quality.** The mechanisms are verified (equivalence of probabilities, parameter movement, state restoration, checkpoint round trip). The training runs were far too short, and an untrained model gives groups with no reward spread, so no reward trend or downstream gain has been observed.
+- **That the check-and-repair loop raises the validity rate** of a *trained* model.
+- **Full-scale training.** Convergence, final quality, and the effect of the 6.1 B configuration are unknown. Neither is the wall-clock cost of two rounds over ≈ 280 GB, of which the natural-language share alone is tens of millions of records.
 - **Throughput and peak memory at full scale.** The memory budget in Section 4.2 is an engineering estimate backed by reduced-scale runs, not a measured figure for the full model at the full context length.
 - **Benchmark performance** of any kind, including how well the internal validator's scores transfer to unfamiliar codebases.
 - **Text-decoder fluency**, which depends entirely on the language data and the training that has not yet been run.
-- **Ablations** of Brain C's contribution, the expert-communication block, the router losses and the math core.
+- **Ablations** of Brain C's contribution, the expert-communication block, the router losses, router RL, the structure head and the math core.
+
+### 22.7 Equivalence and speed of the throughput changes
+
+Each optimization was checked against the previous implementation on identical inputs and identical weights.
+
+| Change | Equivalence | Speed |
+|---|---|---|
+| One scatter per destination type in the HGT layer (synthetic graph: 3 node types, 6 relations, ≈ 6,500 nodes, 36,000 edges, width 64; five forward passes) | Maximum absolute difference **0.0** | 3.9 s vs. 12.1 s (≈ 3×) |
+| Single-pass batch encoding and CPU-side edge assembly (400 word graphs, ≈ 45,600 nodes) | Node features, edge indices and per-graph indices **identical**, also with the node budget forcing subsampling and with the length-bucketed chunks | 5.4 s vs. 9.6 s (≈ 1.8×) |
+| Language CPU stage on a worker thread | n/a (same function, earlier) | In the tiny joint run 22 of 24 micro-batches arrived pre-computed; the benefit on real data depends on how long the CPU stage takes relative to the device step |
+| Bounded validation generation | n/a | The tiny joint run that previously sat for over twenty minutes in validation finished in under four; that earlier run also shared the machine with stray profiling processes, so the ratio is indicative only |
+
+These numbers say how much *host-side* time was removed. On the target accelerator the HGT and encoder will be dominated by different costs, and the real gain there is unknown until profiled.
 
 ---
 
@@ -806,6 +919,8 @@ The remaining mismatches are concentrated in constructs the line-oriented codec 
 | `POST /ground` | Route a question to the engine, to web search, or to neither |
 | `POST /search`, `GET /search/health` | Web search and its health |
 
+`review_code`, `generate_checked`, `suggest_relations` and `project_overview` are library methods of the model object; they are not yet exposed as CLI commands or HTTP endpoints.
+
 Inputs are type-checked and size-capped; requests pass the linguistic-safety screen when a policy is configured; an **API key** may be required (compared in constant time); starting a server that accepts outside connections without one prints a prominent warning. **Backpressure** is available (requests beyond a configurable bound receive a retry-after response). **Every service limit defaults to unlimited** — acceptable length is a property of the operator's service, not of the model.
 
 ### 23.3 Release pack
@@ -837,6 +952,16 @@ These come from the system's own change history and from the reduced-scale trial
 - **Compiled-bridge buffer donation** conflicted with retaining the graph; fixed by compiling in default mode and disabling donation.
 - **The giant logits tensor** at long context; replaced by chunked, recomputed loss.
 - **Codec dropped block comments and C preprocessor directives, and turned tabs into placeholders.** Found by measuring round trips on real C headers; fixed (Section 22.4 shows the result).
+
+**Found while adding reinforcement learning and the throughput work (this edition)**
+
+- **Router RL update ran before the batch's backward pass.** The RL step changed the router gate in place while the pending batch graph still needed the old values, and the next backward failed with an in-place-modification error. It surfaced only when a language data file was present and the whole path ran together; unit tests of the RL step alone passed. Fixed by deferring the RL step until after the backward pass.
+- **The router's RL update wiped pending gradients.** Zeroing and back-propagating on parameters shared with the main objective discarded gradient accumulated for it. Fixed by taking the RL gradient with an explicit gradient call and restoring the pending gradients afterwards.
+- **Validation generated without a limit.** A model that had not learned to stop produced output up to the context ceiling for each of twenty validation samples at every pass, which stalled training. Output is now bounded relative to each reference and the sample count reduced.
+- **Language micro-batches did their CPU work on the training thread** while the accelerator idled, and the tensorizer encoded graph by graph and created many tiny device tensors. Both restructured (Sections 7 and 21.4).
+- **Two scatters per relation in every HGT layer.** Now one per destination type, same sums.
+- **`generate_best_of` ignored the caller's output budget** for its sampled candidates. Fixed.
+- **Profiles can mislead.** An early profile suggested a data-reading and hashing bottleneck; the hashing was the compiler's cache keys. The real costs were the ones above.
 
 **Model and training**
 
@@ -878,7 +1003,7 @@ These come from the system's own change history and from the reduced-scale trial
 
 | Parameter | Value |
 |---|---|
-| **Total parameters** | **≈ 6.1 B** (analytic estimate 6.10 B; budget 6.0–6.2 B; authoritative count logged at start-up and in the model card) |
+| **Total parameters** | **≈ 6.1 B** (analytic estimate 6.102 B plus ≈ 0.011 B for the optional structure head; budget 6.0–6.2 B; authoritative count logged at start-up and in the model card) |
 | **Design target** | A single high-memory accelerator (≈ 180 GB class), BF16/FP16 |
 | Static training memory | ≈ 16 bytes per parameter (≈ 98 GB) |
 | Hidden width | 1,664 |
@@ -893,7 +1018,9 @@ These come from the system's own change history and from the reduced-scale trial
 | Text decoder | 8 layers; 32,000-token byte-level BPE; 8 memory-prefix tokens; 2,048 context |
 | Decoder context | **180,000** positions ceiling; **150,000** training length; length curriculum |
 | Graph budget | **20,480** nodes after collapse |
-| PPO policy head | 1,024-way action space; buffered updates; decoder RL at an adaptive cadence |
+| PPO policy head | 1,024-way action space; buffered updates |
+| Decoder RL (Level 2) | Group-relative PPO-clip, token-level, asymmetric clip, KL early stop; group of 4 rollouts by default; adaptive cadence; router gate trained from the same advantages through a separate optimizer |
+| Structure head | 64 hashed relation buckets; ≈ 11.3 M parameters; hidden-edge link prediction + relation typing on Brain A |
 | Escalation | Up to 3 validator-ranked stochastic candidates, only when the first answer is rejected |
 | Math core | 69 units, 32 constants, 121 formulas (each with a dimensional check; added ones with independent reference values), < 1 M learned parameters |
 | Search catalog | 589 trusted domains in 21 categories |
@@ -915,8 +1042,12 @@ These come from the system's own change history and from the reduced-scale trial
 - **Memory and speed at full scale are projections.** The static budget is arithmetic; activation behavior at the full context length and node budget, and the cost of a joint round, are measurements still to be taken.
 - **Codec fidelity varies by language.** Section 22.4 shows near-perfect round trips for some languages and visible residual error for others; generated code has no built-in syntax guarantee — validity comes from the validator, structural repair, the RL loop and abstention.
 - **The universal structural reader is heuristic by nature.** It recovers the shared skeleton of programming languages without a grammar; it does not replace a real grammar where one exists, and unusual syntaxes will produce coarser graphs.
-- **RL does not reach the brains.** Level 1 trains a confidence head on detached states; Level 2 trains the decoder only. Letting policy-gradient signal refine understanding would be a deliberate architectural change.
-- **Level 1 is a confidence learner, not a generative policy;** behavior shaping comes from Level 2, whose single-rollout variance is why trends are logged over windows.
+- **RL does not reach the brains' HGT weights.** Level 1 trains a confidence head on detached states; Level 2 trains the decoder and the router's gate. Letting policy-gradient signal refine understanding would be a deliberate architectural change.
+- **Level 1 is a confidence learner, not a generative policy;** behavior shaping comes from Level 2. A group of a handful of rollouts is a noisy estimate, which is why trends are logged over windows, and groups without reward spread are skipped. Early in training, when most rollouts are equally bad, most groups will be skipped; RL only starts to matter once the decoder produces a mix of good and bad answers.
+- **Nothing here shows that RL, router RL or the structure head improve results.** The mechanisms are verified; the effect is an experiment to run at scale, ideally as ablations.
+- **Not tested on the target accelerator.** Every optimization above was verified for equivalence and timed in the test runs. Accelerator-specific tuning — compilation of the decoder or the HGT stack, kernel selection, reducing the router's per-call synchronization — is the first work to do once profiling is possible.
+- **The project overview is name-level.** It links files by shared symbol names, not by resolving imports, so it can miss dependencies expressed only through paths or dynamic loading and can link unrelated files that happen to share a name within one language.
+- **The check-and-repair loop spends compute for odds, not guarantees,** and its prompt-augmentation repair assumes the model has learned to respond to a described problem.
 - **Internal validator scores are a strong in-distribution proxy,** because several independent checks combine so one failure cannot be hidden. How that transfers to unfamiliar codebases is a separate question only external benchmarking can settle.
 - **Reward hacking is a bounded, real risk** in any RL-from-a-learned-validator loop. Fixed primary terms, small bounded auxiliary terms, measurement-driven adaptation and the hack detector reduce — but do not remove — the incentive.
 - **Execution-based validation needs genuine sandboxing** whenever it is enabled; running untrusted candidate code always does.
@@ -938,25 +1069,27 @@ The honest summary: the mechanisms described here are real, were exercised end t
 | Structural check and repair | universal lexical layer, `_universal_syntax_issues`, `_repair_structure` | CodeMind.py |
 | Polyglot | `PolyglotProject`, `PolyglotLinker`, `MultiProjectConnector` | CodeMind.py |
 | Human-language graphs | `build_language_graph`, `NLDetector` | CodeMind.py |
-| Encoding | `TokenEfficientEncoder`, `GraphTensorizer`, `SemanticFusion` | CodeMind.py |
+| Encoding | `TokenEfficientEncoder`, `GraphTensorizer` (`prepare_graph`, `assemble_batch`), `SemanticFusion` | CodeMind.py |
+| Self-supervised structure | `StructureHead`, `suggest_relations` | CodeMind.py |
 | HGT | `HGTLayer`, `HGTBrain` | CodeMind.py |
 | Three-brain orchestration | `DualBrainOrchestrator`, `DualBrainState` | codemind_brain_dual.py |
-| MoE routing | `FlyPromptRouter`, `TemporalEnsembleExpert`, `ExpertCommsBlock` | codemind_brain_dual.py |
+| MoE routing | `FlyPromptRouter` (including stochastic routing and `rl_policy_loss`), `TemporalEnsembleExpert`, `ExpertCommsBlock` | codemind_brain_dual.py |
 | Bridge | `AntiForgetBridge` | codemind_brain_dual.py |
 | Graph collapsing | `GraphCollapser`, `CollapseStats` | codemind_brain_dual.py |
 | Generation (code) | `GraphActionCodec`, `CodeDecoder`, `GraphRenderer`, `LargeCodeHandler` | CodeMind.py |
 | Generation (text) | `TextCodec`, text decoder, `chat_ex`, `respond` | CodeMind.py |
+| Check and repair, overview | `review_code`, `generate_checked`, `generate_best_of`, `project_overview` | CodeMind.py |
 | Validation | `CodeValidator`, `StaticAnalyzer`, `IntegrityChecker`, `CodePurityChecker`, `QualityEngine` | CodeMind.py |
 | Supervised losses | `CodeMindLoss`, `LanguageMaskHead`, `LossBalancer`, `AppropriatenessHead` | CodeMind.py |
 | RL — policy head | `CodePolicyHead`, `PPOAgent` | CodeMind.py |
-| RL — decoder | `generate_rl`, decoder RL step, `RunningBaseline` | CodeMind.py |
+| RL — decoder and router | `generate_rl` (with action trace), `_decoder_rl_step` (group-relative PPO), `_rl_logprobs`, `_rl_reward` | CodeMind.py |
 | RL — reward | `CuriosityPPOReward`, `RewardWeightAdapter`, `CuriosityMemory`, `TrustTracker`, `ExperienceBank` | CodeMind.py |
 | Math engine | `evaluate`, `calc`, `Quantity`, `FORMULAS` (121), `engineering_calc`, `verify_text`, numerical tools | CodeMind.py |
 | Math in the learning system | `MathPhysicsService`, `MathPhysicsAdapter`, `MathPhysicsHead`, `ground()` | CodeMind.py |
 | Sizing and hardware | `estimate_model_params`, `advise_model_size`, `detect_hardware`, VRAM governor | CodeMind.py |
 | Data | `DataConnector`, `compute_training_plan`, `_ParsePrefetcher`, graph cache | CodeMind.py |
 | Offline cache | `build_graph_cache.py` | build_graph_cache.py |
-| Training | `TrainingPipeline`, `TrainConfig`, `PrecisionManager`, `SSDCache` | CodeMind.py |
+| Training | `TrainingPipeline` (joint step, language micro-batches and their CPU-stage prefetch), `TrainConfig`, `PrecisionManager`, `SSDCache` | CodeMind.py |
 | Serving and packaging | `RuntimeConfig`, `ApiEndpoint`, `export_release`, `from_pretrained` | CodeMind.py |
 | Safety | `LinguisticSafety`, `SafetyPolicy`, PII and secret scanners | linguistic_safety.py |
 | Search | `SearchSystem`, backends, trust catalog, `SafeHTTP`, `deep_search` | search.py |
