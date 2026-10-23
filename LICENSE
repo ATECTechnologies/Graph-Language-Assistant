@@ -1,0 +1,43 @@
+CodeMind — Licensing
+====================
+
+Copyright (c) FWKTechnologies. All rights reserved except as expressly granted
+by the license of each version.
+
+Each version of CodeMind has its OWN license. A version's license
+applies only to that version and to works derived from it:
+
+  CodeMind 1.0  ->  licenses/LICENSE-CodeMind-1.0.md
+  CodeMind 2.0  ->  licenses/LICENSE-CodeMind-2.0.md
+  CodeMind 3.0  ->  licenses/LICENSE-CodeMind-3.0.md
+
+CodeMind 1.0 is NOT released. Its license is an ACCESS license:
+  - The model is not downloadable and is not distributed in any form, and the
+    public codemindai-api library cannot run it.
+  - It can be used only through access granted by FWKTechnologies (for
+    example an API key to its server), including commercially inside your
+    own websites, applications and API services.
+  - Copying, modifying, sharing, selling or reselling the model, or reselling
+    or sharing access to it, is not allowed.
+  - Any copy of CodeMind 1.0 not obtained from FWKTechnologies in writing is
+    unlicensed.
+
+CodeMind 2.0 and 3.0 are released. Their licenses are MODEL licenses:
+  - Commercial use is allowed for running your own services on websites,
+    in applications and through APIs.
+  - Modifying the model is allowed.
+  - Sharing the model or a modified version is allowed only free of charge,
+    as open source, under the same license.
+  - Selling the model or any modified version, in any form, is not allowed.
+  - Public services must meet the safety and responsibility duties (3.0 adds
+    transparency and security duties).
+
+Common to all three:
+  - Credit to the main developer is always required:
+        Built with CodeMind <version> by FWKTechnologies
+        https://github.com/FWKTechnologies/CodeMind-Code-Intelligence
+
+The documents in docs/ describe the models; they are not licenses, and the
+CodeMind 1.0 document does not make CodeMind 1.0 available. If a
+summary anywhere differs from a version's license file, the license file
+governs.
